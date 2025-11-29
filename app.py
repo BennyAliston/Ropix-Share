@@ -1,27 +1,27 @@
 import os
-from flask import Flask, render_template, request, send_from_directory, jsonify, send_file, Response
-from werkzeug.utils import secure_filename
-import mimetypes
-from PIL import Image
-import io
-import re
 from pathlib import Path
-import shutil
+import hashlib
+import binascii
+from flask import Flask, request, jsonify, Response, send_from_directory
+import mimetypes
+import re
 from datetime import datetime
 from flask_socketio import SocketIO, emit
-import json
 import base64
 import uuid
-import threading
-import time
 
 app = Flask(__name__)
 app.secret_key = os.urandom(24)
-socketio = SocketIO(app, cors_allowed_origins="*")
+socketio = SocketIO(app, cors_allowed_origins="*", ping_timeout=60, ping_interval=25)
+BASE_DIR = Path(__file__).resolve().parent
+FRONTEND_DIST = BASE_DIR / 'frontend' / 'dist'
+app.config['UPLOAD_FOLDER'] = str(BASE_DIR)
 
 # In-memory file storage for direct sharing
 active_transfers = {}
 file_metadata = {}
+
+CHUNK_SIZE = 64 * 1024  # 64KB chunks strike a balance between latency and overhead
 
 # Supported preview file types with MIME type validation
 PREVIEW_TYPES = {
@@ -118,23 +118,96 @@ def format_file_size(size):
         return "0 B"  # Return a default value if size is invalid
 
 
+def compute_manifest_signature(manifest):
+    """
+    Build a deterministic signature for the manifest so receivers can verify
+    they got an untampered chunk list. We purposely rely on predictable strings
+    instead of arbitrary JSON ordering to make client-side verification easy.
+    """
+    chunk_hashes = '|'.join(chunk['hash'] for chunk in manifest['chunks'])
+    payload = f"{manifest['file_id']}:{manifest['total_size']}:{len(manifest['chunks'])}:{chunk_hashes}"
+    return hashlib.sha256(payload.encode('utf-8')).hexdigest()
+
+
+def compute_chunk_manifest(file_id, file_bytes):
+    """Split a file buffer into hashed chunks and return manifest + signature."""
+    chunks = []
+    offset = 0
+    index = 0
+    total_size = len(file_bytes)
+
+    while offset < total_size:
+        chunk_bytes = file_bytes[offset:offset + CHUNK_SIZE]
+        chunk_hash = hashlib.sha256(chunk_bytes).hexdigest()
+        chunks.append({
+            'index': index,
+            'offset': offset,
+            'size': len(chunk_bytes),
+            'hash': chunk_hash
+        })
+        index += 1
+        offset += len(chunk_bytes)
+
+    manifest = {
+        'file_id': file_id,
+        'chunk_size': CHUNK_SIZE,
+        'total_size': total_size,
+        'chunks': chunks
+    }
+    return manifest, compute_manifest_signature(manifest)
+
+
+def sanitize_relative_path(path_value):
+    """
+    Ensure any relative path supplied by peers cannot break out of our controlled
+    scope. We strip dangerous tokens and normalize separators so that the value
+    can only ever describe a logical folder structure for display purposes.
+    """
+    if not path_value:
+        return ''
+
+    normalized = path_value.replace('\\', '/').strip()
+    normalized = re.sub(r'/+', '/', normalized)
+    safe_parts = [
+        part for part in normalized.split('/')
+        if part not in ('', '.', '..')
+    ]
+    return '/'.join(safe_parts)
+
+
+def resolve_file_metadata(file_id):
+    """
+    Map the user-visible file ID to the safe metadata entry. This ensures peers
+    cannot coerce us into reading arbitrary paths because all lookups go through
+    server-generated IDs.
+    """
+    metadata = file_metadata.get(file_id)
+    if not metadata:
+        raise KeyError('File not found')
+    if 'content' not in metadata:
+        raise ValueError('Missing file content')
+    if 'manifest' not in metadata or 'manifest_signature' not in metadata:
+        raise ValueError('Missing manifest data')
+    return metadata
+
+
 @app.route('/')
 def index():
-    try:
-        # Get files from in-memory storage
-        file_info = []
-        for file_id, metadata in file_metadata.items():
-            file_info.append({
-                'name': metadata['filename'],
-                'type': metadata['file_type'],
-                'icon': get_file_icon(metadata['file_type']),
-                'size': format_file_size(metadata['size']),
-                'mime_type': metadata['mime_type'],
-                'file_id': file_id
-            })
-        return render_template('index.html', files=file_info)
-    except Exception as e:
-        return jsonify({'error': str(e)}), 500
+    index_file = FRONTEND_DIST / 'index.html'
+    if index_file.exists():
+        return send_from_directory(FRONTEND_DIST, 'index.html')
+    return jsonify({
+        'message': 'React build not found. Run `npm install && npm run dev` inside the frontend/ directory for development, or build the project with `npm run build`.'
+    })
+
+
+@app.route('/assets/<path:filename>')
+def serve_assets(filename):
+    assets_dir = FRONTEND_DIST / 'assets'
+    asset_path = assets_dir / filename
+    if assets_dir.exists() and asset_path.exists():
+        return send_from_directory(assets_dir, filename)
+    return jsonify({'error': 'Asset not found'}), 404
 
 @socketio.on('connect')
 def handle_connect():
@@ -156,16 +229,44 @@ def handle_disconnect():
 @socketio.on('request_file')
 def handle_file_request(data):
     file_id = data.get('file_id')
-    if file_id in file_metadata:
-        metadata = file_metadata[file_id]
-        emit('file_data', {
+    if not file_id:
+        emit('file_error', {'error': 'Missing file_id'})
+        return
+    try:
+        metadata = resolve_file_metadata(file_id)
+    except (KeyError, ValueError) as exc:
+        emit('file_error', {'error': str(exc)})
+        return
+    
+    manifest = metadata['manifest']
+    emit('file_manifest', {
+        'file_id': file_id,
+        'filename': metadata['filename'],
+        'mime_type': metadata['mime_type'],
+        'size': metadata['size'],
+        'manifest': manifest,
+        'manifest_signature': metadata['manifest_signature']
+    })
+
+    try:
+        file_bytes = base64.b64decode(metadata['content'])
+    except (ValueError, binascii.Error) as exc:  # need binascii import?
+        emit('file_error', {'error': f'Corrupted file content: {exc}'})
+        return
+
+    for chunk in manifest['chunks']:
+        start = chunk['offset']
+        end = start + chunk['size']
+        chunk_bytes = file_bytes[start:end]
+        emit('file_chunk', {
             'file_id': file_id,
-            'filename': metadata['filename'],
-            'content': metadata['content'],
-            'mime_type': metadata['mime_type']
+            'chunk_index': chunk['index'],
+            'size': chunk['size'],
+            'hash': chunk['hash'],
+            'content': base64.b64encode(chunk_bytes).decode('utf-8')
         })
-    else:
-        emit('file_error', {'error': 'File not found'})
+
+    emit('file_transfer_complete', {'file_id': file_id})
 
 
 @app.route('/upload', methods=['POST'])
@@ -176,6 +277,8 @@ def upload_file():
         
         file = request.files['file']
         device_info = request.form.get('device_info', 'Unknown Device')
+        requested_path = request.form.get('path', file.filename)
+        safe_relative_path = sanitize_relative_path(requested_path) or os.path.basename(file.filename)
         
         if file.filename == '':
             return jsonify({'error': 'No file selected'}), 400
@@ -189,6 +292,7 @@ def upload_file():
         
         # Generate unique file ID
         file_id = str(uuid.uuid4())
+        manifest, manifest_signature = compute_chunk_manifest(file_id, file_content)
         
         # Store file metadata
         file_type = get_file_type(file.filename)
@@ -201,7 +305,10 @@ def upload_file():
             'size': file_size,
             'content': base64.b64encode(file_content).decode('utf-8'),
             'created_at': datetime.now().isoformat(),
-            'device_info': device_info
+            'device_info': device_info,
+            'safe_path': safe_relative_path,
+            'manifest': manifest,
+            'manifest_signature': manifest_signature
         }
         
         # Broadcast to all connected clients
@@ -210,7 +317,9 @@ def upload_file():
             'filename': file.filename,
             'file_type': file_type,
             'size': format_file_size(file_size),
-            'device_info': device_info
+            'device_info': device_info,
+            'safe_path': safe_relative_path,
+            'chunks': len(manifest['chunks'])
         })
         
         return jsonify({
@@ -226,10 +335,7 @@ def upload_file():
 @app.route('/download/<file_id>')
 def download_file(file_id):
     try:
-        if file_id not in file_metadata:
-            return jsonify({'error': 'File not found'}), 404
-            
-        metadata = file_metadata[file_id]
+        metadata = resolve_file_metadata(file_id)
         file_content = base64.b64decode(metadata['content'])
         
         return Response(
@@ -240,6 +346,10 @@ def download_file(file_id):
                 'Content-Length': str(metadata['size'])
             }
         )
+    except KeyError:
+        return jsonify({'error': 'File not found'}), 404
+    except ValueError as exc:
+        return jsonify({'error': str(exc)}), 500
     except Exception as e:
         return jsonify({'error': str(e)}), 500
 
@@ -257,18 +367,40 @@ def file_info(file_id):
             'mime_type': metadata['mime_type'],
             'size': format_file_size(metadata['size']),
             'created': metadata['created_at'],
-            'device_info': metadata['device_info']
+            'device_info': metadata['device_info'],
+            'safe_path': metadata.get('safe_path', metadata['filename']),
+            'integrity': {
+                'chunks': len(metadata['manifest']['chunks']),
+                'chunk_size': metadata['manifest']['chunk_size'],
+                'manifest_signature': metadata['manifest_signature']
+            }
         })
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route('/api/files')
+def api_files():
+    try:
+        files = []
+        for file_id, metadata in file_metadata.items():
+            files.append({
+                'file_id': file_id,
+                'filename': metadata['filename'],
+                'file_type': metadata['file_type'],
+                'mime_type': metadata['mime_type'],
+                'size': format_file_size(metadata['size']),
+                'device_info': metadata['device_info'],
+                'safe_path': metadata.get('safe_path', metadata['filename'])
+            })
+        return jsonify({'files': files})
     except Exception as e:
         return jsonify({'error': str(e)}), 500
 
 @app.route('/preview/<file_id>')
 def preview_file(file_id):
     try:
-        if file_id not in file_metadata:
-            return jsonify({'error': 'File not found'}), 404
-            
-        metadata = file_metadata[file_id]
+        metadata = resolve_file_metadata(file_id)
         file_content = base64.b64decode(metadata['content'])
         
         if metadata['file_type'] == 'text' or metadata['file_type'] == 'code':
@@ -293,17 +425,19 @@ def preview_file(file_id):
                 mimetype=metadata['mime_type'],
                 headers={'Content-Disposition': f'inline; filename="{metadata["filename"]}"'}
             )
+    except KeyError:
+        return jsonify({'error': 'File not found'}), 404
+    except ValueError as exc:
+        return jsonify({'error': str(exc)}), 500
     except Exception as e:
         return jsonify({'error': str(e)}), 500
 
 @app.route('/delete/<file_id>', methods=['POST'])
 def delete_file(file_id):
     try:
-        if file_id not in file_metadata:
-            return jsonify({'error': 'File not found'}), 404
-            
+        metadata = resolve_file_metadata(file_id)
         device_info = request.form.get('device_info', 'Unknown Device')
-        filename = file_metadata[file_id]['filename']
+        filename = metadata['filename']
         
         # Remove from memory
         del file_metadata[file_id]
@@ -316,6 +450,8 @@ def delete_file(file_id):
         })
         
         return jsonify({'success': True})
+    except KeyError:
+        return jsonify({'error': 'File not found'}), 404
     except Exception as e:
         return jsonify({'error': str(e)}), 500
 
