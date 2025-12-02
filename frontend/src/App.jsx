@@ -19,11 +19,21 @@ const initialPreviewState = {
 };
 
 function App() {
+  const prefersDarkMode = () => {
+    if (typeof window === 'undefined') return false;
+    const stored = window.localStorage.getItem('p2p-dark-mode');
+    if (stored !== null) {
+      return stored === 'true';
+    }
+    return window.matchMedia?.('(prefers-color-scheme: dark)').matches ?? false;
+  };
+
   const [files, setFiles] = useState([]);
   const [isDragging, setIsDragging] = useState(false);
   const [uploadStatus, setUploadStatus] = useState('');
   const [previewState, setPreviewState] = useState(initialPreviewState);
   const [toast, setToast] = useState(null);
+  const [isDarkMode, setIsDarkMode] = useState(() => prefersDarkMode());
 
   const fileInputRef = useRef(null);
   const folderInputRef = useRef(null);
@@ -42,14 +52,90 @@ function App() {
     })
   );
 
+  const formatFileSize = useCallback((value) => {
+    const bytes = Number(value);
+    if (!Number.isFinite(bytes) || bytes <= 0) return '0 Bytes';
+    const k = 1024;
+    const sizes = ['Bytes', 'KB', 'MB', 'GB', 'TB'];
+    const i = Math.min(Math.floor(Math.log(bytes) / Math.log(k)), sizes.length - 1);
+    return `${parseFloat((bytes / k ** i).toFixed(2))} ${sizes[i]}`;
+  }, []);
+
+  const normalizeFile = useCallback(
+    (file) => {
+      if (!file) return file;
+      const rawSize =
+        typeof file.size === 'number'
+          ? file.size
+          : Number.isFinite(Number(file.size_bytes))
+            ? Number(file.size_bytes)
+            : Number(file.size) || 0;
+      return {
+        ...file,
+        size: Number.isFinite(rawSize) && rawSize >= 0 ? rawSize : 0,
+        size_display: file.size_display || formatFileSize(rawSize),
+        uploaded_at: file.uploaded_at || file.created_at || file.created || null,
+        safe_path: file.safe_path || file.filename,
+        mime_type: file.mime_type || 'application/octet-stream'
+      };
+    },
+    [formatFileSize]
+  );
+
+  const supportedDocumentExtensions = useMemo(
+    () => [
+      '.pdf',
+      '.doc',
+      '.docx',
+      '.ppt',
+      '.pptx',
+      '.xls',
+      '.xlsx',
+      '.odt',
+      '.ods',
+      '.odp',
+      '.rtf',
+      '.txt'
+    ],
+    []
+  );
+
+  const detectPreviewMode = useCallback(
+    (file, mimeType = '') => {
+      const normalizedMime = (mimeType || file?.mime_type || '').toLowerCase();
+      const filename = (file?.filename || file?.safe_path || '').toLowerCase();
+
+      if (normalizedMime.startsWith('image/') || /\.(png|jpe?g|gif|bmp|webp|svg)$/.test(filename)) {
+        return 'image';
+      }
+      if (normalizedMime.startsWith('video/') || /\.(mp4|webm|ogg|mov|avi|mkv)$/.test(filename)) {
+        return 'video';
+      }
+      if (normalizedMime.startsWith('audio/') || /\.(mp3|wav|flac|m4a|aac|ogg)$/.test(filename)) {
+        return 'audio';
+      }
+      if (normalizedMime === 'application/pdf' || filename.endsWith('.pdf')) {
+        return 'pdf';
+      }
+      if (supportedDocumentExtensions.some((ext) => filename.endsWith(ext))) {
+        return 'document';
+      }
+      if (normalizedMime.startsWith('text/')) {
+        return 'text';
+      }
+      return 'binary';
+    },
+    [supportedDocumentExtensions]
+  );
+
   const fetchFiles = useCallback(async () => {
     const response = await fetch(`${API_BASE}/api/files`);
     if (!response.ok) {
       throw new Error('Unable to load files');
     }
     const data = await response.json();
-    setFiles(data.files || []);
-  }, []);
+    setFiles((data.files || []).map(normalizeFile));
+  }, [normalizeFile]);
 
   useEffect(() => {
     fetchFiles().catch((err) => console.error(err));
@@ -65,9 +151,10 @@ function App() {
     socketRef.current = socket;
 
     socket.on('file_available', (fileData) => {
+      const normalized = normalizeFile(fileData);
       setFiles((prev) => {
-        const without = prev.filter((item) => item.file_id !== fileData.file_id);
-        return [{ ...fileData }, ...without];
+        const without = prev.filter((item) => item.file_id !== normalized.file_id);
+        return [normalized, ...without];
       });
     });
 
@@ -100,12 +187,33 @@ function App() {
     return () => {
       socket.disconnect();
     };
-  }, [addToast]);
+  }, [addToast, normalizeFile]);
 
   // Apply terminal-mode class on mount
   useEffect(() => {
     const root = document.querySelector('.app-shell') || document.body;
     root.classList.add('terminal-mode');
+  }, []);
+
+  useEffect(() => {
+    if (typeof document === 'undefined') {
+      return;
+    }
+    const root = document.documentElement;
+    const body = document.body;
+    const theme = isDarkMode ? 'dark' : 'light';
+    root.dataset.theme = theme;
+    body.dataset.theme = theme;
+    root.classList.toggle('dark-mode', isDarkMode);
+    body.classList.toggle('dark-mode', isDarkMode);
+
+    if (typeof window !== 'undefined') {
+      window.localStorage.setItem('p2p-dark-mode', String(isDarkMode));
+    }
+  }, [isDarkMode]);
+
+  const toggleTheme = useCallback(() => {
+    setIsDarkMode((prev) => !prev);
   }, []);
 
   const handleFilesUpload = useCallback(
@@ -155,58 +263,73 @@ function App() {
     [handleFilesUpload]
   );
 
-  const requestPreview = useCallback(async (file) => {
-    setPreviewState((prev) => ({
-      ...prev,
-      open: true,
-      loading: true,
-      error: null,
-      content: '',
-      blobUrl: prev.blobUrl ? (URL.revokeObjectURL(prev.blobUrl), null) : null,
-      metadata: { name: file.filename, type: file.file_type }
-    }));
-
-    try {
-      if (file.file_type === 'text' || file.file_type === 'code') {
-        const response = await fetch(`${API_BASE}/preview/${file.file_id}`);
-        if (!response.ok) throw new Error('Preview failed');
-        const data = await response.json();
-        setPreviewState((prev) => ({
-          ...prev,
-          loading: false,
-          mode: 'text',
-          content: data.content,
-          metadata: {
-            ...data.info,
-            safe_path: file.safe_path
-          }
-        }));
-      } else {
-        const response = await fetch(`${API_BASE}/preview/${file.file_id}`);
-        if (!response.ok) throw new Error('Preview failed');
-        const blob = await response.blob();
-        const blobUrl = URL.createObjectURL(blob);
-        setPreviewState((prev) => ({
-          ...prev,
-          loading: false,
-          mode: 'binary',
-          blobUrl,
-          metadata: {
-            name: file.filename,
-            type: file.file_type,
-            mime_type: file.mime_type,
-            size: file.size
-          }
-        }));
-      }
-    } catch (error) {
+  const requestPreview = useCallback(
+    async (file) => {
       setPreviewState((prev) => ({
         ...prev,
-        loading: false,
-        error: error.message
+        open: true,
+        loading: true,
+        error: null,
+        content: '',
+        blobUrl: prev.blobUrl ? (URL.revokeObjectURL(prev.blobUrl), null) : null,
+        metadata: {
+          name: file.filename,
+          type: file.file_type,
+          safe_path: file.safe_path,
+          file_id: file.file_id
+        }
       }));
-    }
-  }, []);
+
+      try {
+        const isTextLike = file.file_type === 'text' || file.file_type === 'code' || file.mime_type?.startsWith('text/');
+        if (isTextLike) {
+          const response = await fetch(`${API_BASE}/preview/${file.file_id}`);
+          if (!response.ok) throw new Error('Preview failed');
+          const data = await response.json();
+          setPreviewState((prev) => ({
+            ...prev,
+            loading: false,
+            mode: 'text',
+            content: data.content,
+            metadata: {
+              ...data.info,
+              safe_path: file.safe_path,
+              file_id: file.file_id
+            }
+          }));
+        } else {
+          const response = await fetch(`${API_BASE}/preview/${file.file_id}`);
+          if (!response.ok) throw new Error('Preview failed');
+          const blob = await response.blob();
+          const blobUrl = URL.createObjectURL(blob);
+          const computedMime = blob.type || file.mime_type || '';
+          const mode = detectPreviewMode(file, computedMime);
+          setPreviewState((prev) => ({
+            ...prev,
+            loading: false,
+            mode,
+            blobUrl,
+            metadata: {
+              name: file.filename,
+              type: file.file_type,
+              mime_type: computedMime || file.mime_type,
+              size: file.size,
+              size_display: file.size_display || formatFileSize(file.size),
+              safe_path: file.safe_path,
+              file_id: file.file_id
+            }
+          }));
+        }
+      } catch (error) {
+        setPreviewState((prev) => ({
+          ...prev,
+          loading: false,
+          error: error.message
+        }));
+      }
+  },
+    [detectPreviewMode, formatFileSize]
+  );
 
   const closePreview = useCallback(() => {
     setPreviewState((prev) => {
@@ -238,9 +361,17 @@ function App() {
     [addToast]
   );
 
-  const downloadFile = useCallback((file) => {
-    window.open(`${API_BASE}/download/${file.file_id}`, '_blank');
-  }, []);
+  const downloadFile = useCallback(
+    (fileOrId) => {
+      const fileId = typeof fileOrId === 'string' ? fileOrId : fileOrId?.file_id;
+      if (!fileId) {
+        addToast('Missing file identifier', 'error');
+        return;
+      }
+      window.open(`${API_BASE}/download/${fileId}`, '_blank');
+    },
+    [addToast]
+  );
 
   const dragListeners = useMemo(
     () => ({
@@ -255,169 +386,227 @@ function App() {
   );
 
   return (
-    <div className="app-shell">
+    <div className="app-shell" onDrop={handleDrop} onDragOver={(e) => e.preventDefault()}>
       <header className="hero">
         <div>
-          <h1>FileShare</h1>
-          <p className="tagline">Neubrutal peer-to-peer vibes ✨</p>
+          <h1>Ropix Share</h1>
+          <p className="tagline">Simple, secure file sharing</p>
         </div>
-        <div className="status-badge success">
-          <span role="img" aria-label="online">
-            🛰
-          </span>
-          Live sync enabled
+        <div className="hero-actions">
+          <button
+            className="btn btn-outline theme-toggle"
+            type="button"
+            onClick={toggleTheme}
+            aria-label="Toggle dark mode"
+          >
+            {isDarkMode ? '🌙 Dark' : '☀️ Light'}
+          </button>
         </div>
       </header>
 
-      <section className="card">
-        <div
-          className={`drop-zone ${isDragging ? 'dragover' : ''}`}
-          {...dragListeners}
-        >
-          <p className="text-lg">
-            Drag files anywhere or blast them in via buttons below.
-          </p>
-          <div style={{ marginTop: '1.5rem', display: 'flex', gap: '1rem', justifyContent: 'center', flexWrap: 'wrap' }}>
-            <button className="btn primary" onClick={() => fileInputRef.current?.click()}>
-              Select files
-            </button>
-            <button className="btn secondary" onClick={() => folderInputRef.current?.click()}>
-              Select folder
-            </button>
-            {uploadStatus && (
-              <span className="uploading">
-                <span className="dot" />
-                {uploadStatus}
-              </span>
-            )}
+      <div className="card-grid">
+        <section className="card card-upload">
+          <h2>Upload Files</h2>
+          <div
+            className={`drop-zone ${isDragging ? 'dragover' : ''}`}
+            onClick={() => fileInputRef.current?.click()}
+          >
+            <p>📁 Drop files here or click to select</p>
+            <div className="action-row">
+              <button
+                className="btn btn-primary"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  fileInputRef.current?.click();
+                }}
+              >
+                Select Files
+              </button>
+              <button 
+                className="btn btn-outline" 
+                onClick={(e) => {
+                  e.stopPropagation();
+                  folderInputRef.current?.click();
+                }}
+              >
+                Select Folder
+              </button>
+            </div>
+            <input
+              type="file"
+              ref={fileInputRef}
+              onChange={handleFileInput}
+              style={{ display: 'none' }}
+              multiple
+            />
+            <input
+              type="file"
+              ref={folderInputRef}
+              onChange={handleFileInput}
+              style={{ display: 'none' }}
+              webkitdirectory="true"
+              mozdirectory="true"
+              directory="true"
+            />
           </div>
-          <input ref={fileInputRef} type="file" multiple hidden onChange={handleFileInput} />
-          <input
-            ref={folderInputRef}
-            type="file"
-            webkitdirectory="true"
-            directory="true"
-            multiple
-            hidden
-            onChange={handleFileInput}
-          />
-        </div>
-      </section>
+        </section>
 
-      <section className="card">
-        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '1rem' }}>
-          <h2 style={{ margin: 0 }}>Shared Files</h2>
-          <span className="pill">{files.length} available</span>
-        </div>
-
-        <div style={{ overflowX: 'auto' }}>
-          <table className="files-table">
-            <thead>
-              <tr>
-                <th>Name</th>
-                <th>Type</th>
-                <th>Size</th>
-                <th>Device</th>
-                <th>Actions</th>
-              </tr>
-            </thead>
-            <tbody>
+        <section className="card card-files">
+          <h2>Shared Files</h2>
+          {uploadStatus && <p className="upload-status">{uploadStatus}</p>}
+          {files.length === 0 ? (
+            <p>No files shared yet. Upload some files to get started.</p>
+          ) : (
+            <div className="file-list">
               {files.map((file) => (
-                <tr key={file.file_id}>
-                  <td>
-                    <strong>{file.filename}</strong>
-                    <div style={{ fontSize: '0.85rem', color: '#475569' }}>{file.safe_path || '—'}</div>
-                  </td>
-                  <td>
-                    <span className="file-chip">{file.file_type}</span>
-                  </td>
-                  <td>{file.size}</td>
-                  <td>{file.device_info || 'Unknown device'}</td>
-                  <td>
-                    <div className="actions">
-                      <button className="btn primary" onClick={() => requestPreview(file)}>
-                        Preview
-                      </button>
-                      <button className="btn secondary" onClick={() => downloadFile(file)}>
-                        Download
-                      </button>
-                      <button className="btn error" onClick={() => deleteFile(file)}>
-                        Delete
-                      </button>
-                    </div>
-                  </td>
-                </tr>
+                <div key={file.file_id} className="file-item">
+                  <div className="file-head">
+                    <h3 className="file-name">{file.filename}</h3>
+                    <span className="file-size">{file.size_display || formatFileSize(file.size)}</span>
+                  </div>
+                  <p className="file-date">
+                    Uploaded:{' '}
+                    {file.uploaded_at ? new Date(file.uploaded_at).toLocaleString() : 'Unknown'}
+                  </p>
+                  <div className="file-actions">
+                    <button
+                      className="btn btn-sm btn-primary"
+                      onClick={() => downloadFile(file)}
+                      disabled={previewState.loading}
+                    >
+                      Download
+                    </button>
+                    <button
+                      className="btn btn-sm btn-warning"
+                      onClick={() => deleteFile(file)}
+                      disabled={previewState.loading}
+                    >
+                      Delete
+                    </button>
+                    <button
+                      className="btn btn-sm btn-outline"
+                      onClick={() => requestPreview(file)}
+                      disabled={previewState.loading}
+                    >
+                      Preview
+                    </button>
+                  </div>
+                </div>
               ))}
-              {!files.length && (
-                <tr>
-                  <td colSpan="5" style={{ textAlign: 'center', padding: '2rem' }}>
-                    No files shared yet. Drop something rad!
-                  </td>
-                </tr>
-              )}
-            </tbody>
-          </table>
-        </div>
-      </section>
+            </div>
+          )}
+        </section>
+      </div>
 
-      {previewState.open && (
-        <div className="neubrutal-modal" onClick={closePreview}>
-          <div className="modal-card" onClick={(event) => event.stopPropagation()}>
-            <header style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '1.5rem' }}>
-              <div>
-                <h3 style={{ margin: 0 }}>{previewState.metadata?.name || 'Preview'}</h3>
-                <p style={{ margin: 0, color: '#475569' }}>{previewState.metadata?.mime_type}</p>
-              </div>
-              <button className="btn" onClick={closePreview}>
+      <div className={`preview-modal ${previewState.open ? 'open' : ''}`}>
+        {previewState.open && (
+          <div 
+            className="card"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="preview-header">
+              <h2>Preview: {previewState.metadata?.name}</h2>
+              <button 
+                className="btn btn-sm btn-outline preview-close"
+                onClick={() => setPreviewState(initialPreviewState)}
+              >
                 Close
               </button>
-            </header>
-
-            {previewState.loading && <p>Loading preview…</p>}
-            {previewState.error && <p className="status-badge danger">{previewState.error}</p>}
-
-            {!previewState.loading && !previewState.error && (
-              <div className="preview-pane">
-                {previewState.mode === 'text' ? (
-                  <pre style={{ whiteSpace: 'pre-wrap', wordBreak: 'break-word' }}>{previewState.content}</pre>
-                ) : (
-                  <div style={{ textAlign: 'center' }}>
-                    <p>Preview not available. Download to inspect the file.</p>
-                    {previewState.blobUrl && (
-                      <button
-                        className="btn primary"
-                        onClick={() => {
-                          const a = document.createElement('a');
-                          a.href = previewState.blobUrl;
-                          a.download = previewState.metadata?.name || 'file';
-                          document.body.appendChild(a);
-                          a.click();
-                          document.body.removeChild(a);
-                        }}
-                      >
-                        Download preview binary
-                      </button>
-                    )}
-                  </div>
-                )}
+            </div>
+            
+            {previewState.loading ? (
+              <div className="preview-empty">
+                <p>Loading preview...</p>
+              </div>
+            ) : previewState.error ? (
+              <div className="preview-empty error">
+                {previewState.error}
+              </div>
+            ) : previewState.mode === 'text' ? (
+              <div className="preview-text">
+                {previewState.content}
+              </div>
+            ) : previewState.mode === 'image' ? (
+              <div className="preview-media image">
+                <img
+                  src={previewState.blobUrl}
+                  alt={previewState.metadata?.name}
+                />
+              </div>
+            ) : previewState.mode === 'video' ? (
+              <div className="preview-media video">
+                <video
+                  src={previewState.blobUrl}
+                  controls
+                />
+              </div>
+            ) : previewState.mode === 'audio' ? (
+              <div className="preview-media audio">
+                <audio
+                  src={previewState.blobUrl}
+                  controls
+                />
+              </div>
+            ) : previewState.mode === 'pdf' || previewState.mode === 'document' ? (
+              <div className="preview-document">
+                <iframe
+                  title={`Preview ${previewState.metadata?.name}`}
+                  src={previewState.blobUrl}
+                />
+                <p className="document-hint">
+                  If the document does not render, use the download button below to open it in a
+                  dedicated viewer.
+                </p>
+              </div>
+            ) : previewState.mode === 'binary' ? (
+              <div className="preview-empty">
+                <p>Preview for this file type is not supported in-browser yet.</p>
+                <p>
+                  Use the download option to view the file locally.
+                </p>
+              </div>
+            ) : (
+              <div className="preview-empty">
+                <p>No preview available.</p>
               </div>
             )}
-
-            {previewState.metadata && (
-              <div style={{ marginTop: '1.5rem' }} className="info-grid">
-                {Object.entries(previewState.metadata).map(([key, value]) => (
-                  <div key={key} className="info-card">
-                    <strong style={{ textTransform: 'capitalize', fontSize: '0.75rem', letterSpacing: '0.08em' }}>
-                      {key.replace('_', ' ')}
-                    </strong>
-                    <div>{value}</div>
-                  </div>
-                ))}
+            
+            <div className="preview-info-grid">
+              <div>
+                <div className="preview-label">File Name</div>
+                <div>{previewState.metadata?.name}</div>
               </div>
-            )}
+              <div>
+                <div className="preview-label">File Type</div>
+                <div>{previewState.metadata?.type || 'Unknown'}</div>
+              </div>
+              {(previewState.metadata?.size_display || previewState.metadata?.size) && (
+                <div>
+                  <div className="preview-label">File Size</div>
+                  <div>
+                    {previewState.metadata?.size_display ||
+                      formatFileSize(previewState.metadata?.size)}
+                  </div>
+                </div>
+              )}
+            </div>
+            
+            <div className="preview-actions">
+              <button 
+                className="btn btn-primary"
+                onClick={() => {
+                  if (previewState.metadata?.file_id) {
+                    downloadFile(previewState.metadata.file_id);
+                  }
+                }}
+                disabled={!previewState.metadata?.file_id}
+              >
+                Download File
+              </button>
+            </div>
           </div>
-        </div>
-      )}
+        )}
+      </div>
 
       {toast && (
         <div

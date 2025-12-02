@@ -218,8 +218,13 @@ def handle_connect():
             'file_id': file_id,
             'filename': metadata['filename'],
             'file_type': metadata['file_type'],
-            'size': format_file_size(metadata['size']),
-            'device_info': metadata['device_info']
+            'mime_type': metadata['mime_type'],
+            'size': metadata['size'],
+            'size_display': format_file_size(metadata['size']),
+            'device_info': metadata['device_info'],
+            'safe_path': metadata.get('safe_path', metadata['filename']),
+            'chunks': len(metadata['manifest']['chunks']),
+            'uploaded_at': metadata['created_at']
         })
 
 @socketio.on('disconnect')
@@ -310,16 +315,20 @@ def upload_file():
             'manifest': manifest,
             'manifest_signature': manifest_signature
         }
+        metadata = file_metadata[file_id]
         
         # Broadcast to all connected clients
         socketio.emit('file_available', {
             'file_id': file_id,
             'filename': file.filename,
             'file_type': file_type,
-            'size': format_file_size(file_size),
-            'device_info': device_info,
-            'safe_path': safe_relative_path,
-            'chunks': len(manifest['chunks'])
+            'mime_type': metadata['mime_type'],
+            'size': metadata['size'],
+            'size_display': format_file_size(metadata['size']),
+            'device_info': metadata['device_info'],
+            'safe_path': metadata.get('safe_path', metadata['filename']),
+            'chunks': len(metadata['manifest']['chunks']),
+            'uploaded_at': metadata['created_at']
         })
         
         return jsonify({
@@ -365,7 +374,8 @@ def file_info(file_id):
             'name': metadata['filename'],
             'type': metadata['file_type'],
             'mime_type': metadata['mime_type'],
-            'size': format_file_size(metadata['size']),
+            'size': metadata['size'],
+            'size_display': format_file_size(metadata['size']),
             'created': metadata['created_at'],
             'device_info': metadata['device_info'],
             'safe_path': metadata.get('safe_path', metadata['filename']),
@@ -389,9 +399,12 @@ def api_files():
                 'filename': metadata['filename'],
                 'file_type': metadata['file_type'],
                 'mime_type': metadata['mime_type'],
-                'size': format_file_size(metadata['size']),
+                'size': metadata['size'],
+                'size_display': format_file_size(metadata['size']),
                 'device_info': metadata['device_info'],
-                'safe_path': metadata.get('safe_path', metadata['filename'])
+                'safe_path': metadata.get('safe_path', metadata['filename']),
+                'uploaded_at': metadata['created_at'],
+                'chunks': len(metadata['manifest']['chunks'])
             })
         return jsonify({'files': files})
     except Exception as e:
@@ -413,7 +426,8 @@ def preview_file(file_id):
                         'name': metadata['filename'],
                         'type': metadata['file_type'],
                         'mime_type': metadata['mime_type'],
-                        'size': format_file_size(metadata['size']),
+                        'size': metadata['size'],
+                        'size_display': format_file_size(metadata['size']),
                         'created': metadata['created_at']
                     }
                 })
