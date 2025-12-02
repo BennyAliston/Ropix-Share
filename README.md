@@ -79,9 +79,6 @@ http://localhost:5000
 - Offline/LAN auto device detection  
 - Password-protected sharing rooms  
 - QR-based quick connect  
-- Drag-and-drop sharing  
-- Multi-file transfer  
-- More file previews  
 
 ## 📜 License
 
