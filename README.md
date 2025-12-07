@@ -98,11 +98,13 @@ http://localhost:5000
 
 ## 🚀 Future Improvements
 
-- Offline/LAN auto device detection
-- Password-protected sharing rooms
-- QR-based quick connect
-- Drag-and-drop sharing
-- Multi-file transfer support
+- Neubrutalism + terminal-inspired UI  
+- Offline/LAN auto device detection  
+- Password-protected sharing rooms  
+- QR-based quick connect  
+- Drag-and-drop sharing  
+- Multi-file transfer  
+- More file previews  
 
 ## 📜 License
 
