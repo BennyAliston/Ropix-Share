@@ -14,6 +14,7 @@ const initialPreviewState = {
   mode: 'text',
   content: '',
   metadata: null,
+  metadataDetails: null, // For extended metadata
   error: null,
   blobUrl: null
 };
@@ -21,7 +22,7 @@ const initialPreviewState = {
 function App() {
   const prefersDarkMode = () => {
     if (typeof window === 'undefined') return false;
-    const stored = window.localStorage.getItem('p2p-dark-mode');
+    const stored = window.localStorage.getItem('ropix-dark-mode');
     if (stored !== null) {
       return stored === 'true';
     }
@@ -146,6 +147,22 @@ function App() {
     setTimeout(() => setToast(null), 3500);
   }, []);
 
+  const [metadataModal, setMetadataModal] = useState({ open: false, loading: false, data: null, error: null });
+
+  const fetchMetadata = useCallback(async (file) => {
+    setMetadataModal({ open: true, loading: true, data: null, error: null });
+    try {
+      const response = await fetch(`${API_BASE}/metadata/${file.file_id}`);
+      if (!response.ok) throw new Error('Failed to fetch metadata');
+      const data = await response.json();
+      setMetadataModal({ open: true, loading: false, data, error: null });
+    } catch (err) {
+      setMetadataModal({ open: true, loading: false, data: null, error: err.message });
+    }
+  }, []);
+
+  const closeMetadataModal = () => setMetadataModal({ open: false, loading: false, data: null, error: null });
+
   useEffect(() => {
     const socket = io();
     socketRef.current = socket;
@@ -208,7 +225,7 @@ function App() {
     body.classList.toggle('dark-mode', isDarkMode);
 
     if (typeof window !== 'undefined') {
-      window.localStorage.setItem('p2p-dark-mode', String(isDarkMode));
+      window.localStorage.setItem('ropix-dark-mode', String(isDarkMode));
     }
   }, [isDarkMode]);
 
@@ -327,7 +344,7 @@ function App() {
           error: error.message
         }));
       }
-  },
+    },
     [detectPreviewMode, formatFileSize]
   );
 
@@ -399,7 +416,7 @@ function App() {
             onClick={toggleTheme}
             aria-label="Toggle dark mode"
           >
-            {isDarkMode ? '🌙 Dark' : '☀️ Light'}
+            {isDarkMode ? '🌙 Theme 2' : '☀️ Theme 1'}
           </button>
         </div>
       </header>
@@ -422,8 +439,8 @@ function App() {
               >
                 Select Files
               </button>
-              <button 
-                className="btn btn-outline" 
+              <button
+                className="btn btn-outline"
                 onClick={(e) => {
                   e.stopPropagation();
                   folderInputRef.current?.click();
@@ -490,6 +507,13 @@ function App() {
                     >
                       Preview
                     </button>
+                    <button
+                      className="btn btn-sm btn-outline"
+                      onClick={() => fetchMetadata(file)}
+                      title="Check Metadata"
+                    >
+                      ℹ️
+                    </button>
                   </div>
                 </div>
               ))}
@@ -500,20 +524,20 @@ function App() {
 
       <div className={`preview-modal ${previewState.open ? 'open' : ''}`}>
         {previewState.open && (
-          <div 
+          <div
             className="card"
             onClick={(e) => e.stopPropagation()}
           >
             <div className="preview-header">
               <h2>Preview: {previewState.metadata?.name}</h2>
-              <button 
+              <button
                 className="btn btn-sm btn-outline preview-close"
                 onClick={() => setPreviewState(initialPreviewState)}
               >
                 Close
               </button>
             </div>
-            
+
             {previewState.loading ? (
               <div className="preview-empty">
                 <p>Loading preview...</p>
@@ -570,7 +594,7 @@ function App() {
                 <p>No preview available.</p>
               </div>
             )}
-            
+
             <div className="preview-info-grid">
               <div>
                 <div className="preview-label">File Name</div>
@@ -590,9 +614,9 @@ function App() {
                 </div>
               )}
             </div>
-            
+
             <div className="preview-actions">
-              <button 
+              <button
                 className="btn btn-primary"
                 onClick={() => {
                   if (previewState.metadata?.file_id) {
@@ -608,19 +632,62 @@ function App() {
         )}
       </div>
 
+      <div className={`preview-modal ${metadataModal.open ? 'open' : ''}`}>
+        {metadataModal.open && (
+          <div className="card" onClick={(e) => e.stopPropagation()} style={{ maxWidth: '600px' }}>
+            <div className="preview-header">
+              <h2>File Metadata</h2>
+              <button className="btn btn-sm btn-outline preview-close" onClick={closeMetadataModal}>Close</button>
+            </div>
+
+            {metadataModal.loading ? (
+              <div className="preview-empty"><p>Loading metadata...</p></div>
+            ) : metadataModal.error ? (
+              <div className="preview-empty error">{metadataModal.error}</div>
+            ) : metadataModal.data ? (
+              <div className="metadata-content">
+                <section>
+                  <h3>Basic Info</h3>
+                  <div className="preview-info-grid">
+                    <div><div className="preview-label">Filename</div><div>{metadataModal.data.filename}</div></div>
+                    <div><div className="preview-label">Type</div><div>{metadataModal.data.base_info.type}</div></div>
+                    <div><div className="preview-label">MIME</div><div>{metadataModal.data.base_info.mime_type}</div></div>
+                    <div><div className="preview-label">Size</div><div>{metadataModal.data.base_info.size}</div></div>
+                    <div><div className="preview-label">Uploaded</div><div>{new Date(metadataModal.data.base_info.uploaded).toLocaleString()}</div></div>
+                  </div>
+                </section>
+
+                {metadataModal.data.details && Object.keys(metadataModal.data.details).length > 0 && (
+                  <section style={{ marginTop: '1rem' }}>
+                    <h3>Extended Details</h3>
+                    <div className="preview-info-grid">
+                      {Object.entries(metadataModal.data.details).map(([key, value]) => {
+                        if (key === 'info' || key === 'tags') {
+                          return Object.entries(value).map(([subKey, subValue]) => (
+                            <div key={subKey}>
+                              <div className="preview-label">{subKey}</div>
+                              <div style={{ wordBreak: 'break-all' }}>{String(subValue)}</div>
+                            </div>
+                          ));
+                        }
+                        return (
+                          <div key={key}>
+                            <div className="preview-label">{key}</div>
+                            <div>{String(value)}</div>
+                          </div>
+                        )
+                      })}
+                    </div>
+                  </section>
+                )}
+              </div>
+            ) : null}
+          </div>
+        )}
+      </div>
+
       {toast && (
-        <div
-          style={{
-            position: 'fixed',
-            bottom: '1.5rem',
-            right: '1.5rem',
-            background: toast.variant === 'error' ? '#fecaca' : '#bbf7d0',
-            border: '3px solid #0f172a',
-            borderRadius: '18px',
-            padding: '0.85rem 1.25rem',
-            boxShadow: '4px 4px 0 #0f172a'
-          }}
-        >
+        <div className={`toast ${toast.variant}`}>
           {toast.message}
         </div>
       )}

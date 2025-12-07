@@ -9,6 +9,7 @@ from datetime import datetime
 from flask_socketio import SocketIO, emit
 import base64
 import uuid
+from metadata_utils import extract_metadata
 
 app = Flask(__name__)
 app.secret_key = os.urandom(24)
@@ -407,6 +408,34 @@ def api_files():
                 'chunks': len(metadata['manifest']['chunks'])
             })
         return jsonify({'files': files})
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/metadata/<file_id>')
+def get_metadata(file_id):
+    try:
+        metadata = resolve_file_metadata(file_id)
+        
+        # Decode content for extraction
+        try:
+            file_content = base64.b64decode(metadata['content'])
+        except (ValueError, binascii.Error):
+            return jsonify({'error': 'Corrupted file content'}), 500
+            
+        extracted = extract_metadata(file_content, metadata['file_type'], metadata['mime_type'])
+        
+        return jsonify({
+            'filename': metadata['filename'],
+            'base_info': {
+                'type': metadata['file_type'],
+                'mime_type': metadata['mime_type'], 
+                'size': format_file_size(metadata['size']),
+                'uploaded': metadata['created_at']
+            },
+            'details': extracted
+        })
+    except KeyError:
+        return jsonify({'error': 'File not found'}), 404
     except Exception as e:
         return jsonify({'error': str(e)}), 500
 

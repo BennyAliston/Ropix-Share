@@ -1,52 +1,77 @@
-# P2P-Sharing
+# Ropix Share
 
-**P2P-Sharing** is a lightweight, real-time, peer-to-peer file sharing web application built using Flask and Socket.IO. It enables devices on the same network (or across networks, if hosted) to instantly share files with each other without storing them on the server. All transfers are direct, ephemeral, and streamed in real time.
+**Ropix Share** is a lightweight, real-time, peer-to-peer file sharing web application. It combines a **Retro Pixel Art UI** frontend built with **React** and **Vite** with a robust **Flask** and **Socket.IO** backend. It enables devices on the same network (or across networks, if hosted) to instantly share files with each other without storing them on the server. All transfers are direct, ephemeral, and streamed in real time.
 
-The goal of this project is to create an accessible, browser-based alternative to tools like SHAREit or AirDrop simple, fast, and requiring no installation.
+The goal of this project is to create an accessible, browser-based alternative to tools like SHAREit or AirDrop—simple, fast, visually unique, and requiring no installation.
 
 ## ✨ Features
 
-- Real-time device discovery  
-- Direct file sharing (no permanent storage)  
-- Live updates via WebSockets  
-- Chunk-based streaming  
-- File metadata preview  
-- Simple, responsive frontend  
+- **Retro Pixel Art UI**: A nostalgic, responsive interface with pixelated aesthetics.
+- **Real-time Discovery**: Automatic device discovery and presence updates.
+- **Direct File Sharing**: No permanent server storage; files stream directly between peers.
+- **Live Updates**: Instant feedback via WebSockets.
+- **Chunk-based Streaming**: Efficient file transfer for large files.
+- **File Previews**: Metadata and previews for various file types.
+- **Mobile Friendly**: Responsive design works on desktop and mobile.
 
 ## 📁 Project Structure
 
 ```
 P2P-Sharing/
 │
-├── app.py
-├── frontend/
-├── scripts/
-├── requirements.txt
-└── vienv/
+├── app.py              # Flask backend server
+├── frontend/           # React + Vite frontend
+│   ├── src/           # Component source code
+│   ├── public/        # Static assets
+│   └── dist/          # Built production assets (served by Flask)
+├── scripts/            # Utility scripts
+├── requirements.txt    # Python dependencies
+└── vienv/              # Virtual environment
 ```
 
 ## 🛠️ Installation & Setup
 
 ### 1. Clone the Repository
-```
+```bash
 git clone https://github.com/your-username/P2P-Sharing.git
 cd P2P-Sharing
 ```
 
-### 2. Create and Activate a Virtual Environment
-```
-python3 -m venv venv
-source venv/bin/activate   # Linux/macOS
-venv\Scripts\activate    # Windows
-```
+### 2. Backend Setup
+Create and activate a virtual environment, then install Python dependencies.
 
-### 3. Install Dependencies
-```
+```bash
+# Create venv
+python3 -m venv venv
+
+# Activate venv
+source venv/bin/activate    # Linux/macOS
+# OR
+venv\Scripts\activate       # Windows
+
+# Install dependencies
 pip install -r requirements.txt
 ```
 
-### 4. Run the Server
+### 3. Frontend Setup
+Navigate to the frontend directory to install dependencies and build the React application.
+
+```bash
+cd frontend
+npm install
+
+# Build only (if you just want to run the Flask server)
+npm run build
+
+# OR Run development server (for frontend hacking)
+npm run dev
 ```
+
+### 4. Run the Application
+The Flask server is configured to serve the built React frontend from `frontend/dist`.
+
+```bash
+# From the root directory (ensure venv is active)
 python app.py
 ```
 
@@ -54,34 +79,30 @@ Access the app at:
 ```
 http://localhost:5000
 ```
+(If running `npm run dev` separately, the frontend will be at http://localhost:5173 but requires the backend running on port 5000).
 
 ## 📡 How It Works
 
-1. Devices connect and register with the server.  
-2. The backend broadcasts device presence to all clients.  
-3. Users select files to share.  
-4. Files are stored temporarily in memory (metadata + streaming).  
-5. Other devices instantly see shared files.  
-6. Downloads stream in chunks.  
-7. Files disappear once the sender deletes them.
+1. **Connect**: Devices visit the URL and register with the server via Socket.IO.
+2. **Discover**: The backend broadcasts connected devices to all users.
+3. **Share**: Users select files; the server stores metadata and buffers streaming chunks in memory.
+4. **Download**: Other peers request the file, which streams in chunks to their device.
+5. **Vanish**: Files are ephemeral and disappear when the sender leaves or deletes them.
 
 ## 🧩 Technologies Used
 
-- Flask  
-- Flask-SocketIO  
-- HTML, CSS, JavaScript  
-- Base64 previews  
-- Python 3.x  
+- **Frontend**: React, Vite, Classnames, CSS Modules (Retro UI)
+- **Backend**: Flask, Flask-SocketIO
+- **Communication**: WebSockets (Socket.IO)
+- **Language**: Python 3.x, JavaScript/TypeScript
 
 ## 🚀 Future Improvements
 
-- Neubrutalism + terminal-inspired UI  
-- Offline/LAN auto device detection  
-- Password-protected sharing rooms  
-- QR-based quick connect  
-- Drag-and-drop sharing  
-- Multi-file transfer  
-- More file previews  
+- Offline/LAN auto device detection
+- Password-protected sharing rooms
+- QR-based quick connect
+- Drag-and-drop sharing
+- Multi-file transfer support
 
 ## 📜 License
 
