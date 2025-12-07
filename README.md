@@ -97,14 +97,10 @@ http://localhost:5000
 - **Language**: Python 3.x, JavaScript/TypeScript
 
 ## 🚀 Future Improvements
-
-- Neubrutalism + terminal-inspired UI  
+ 
 - Offline/LAN auto device detection  
 - Password-protected sharing rooms  
-- QR-based quick connect  
-- Drag-and-drop sharing  
-- Multi-file transfer  
-- More file previews  
+- QR-based quick connect
 
 ## 📜 License
 
