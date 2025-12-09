@@ -367,8 +367,29 @@ body {
 .preview-media img,
 .preview-media video {
   width: 100%;
-  max-height: 60vh;
   border: 4px solid #000;
+}
+
+.preview-document {
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
+  width: 100%;
+  height: 60vh;
+}
+
+.preview-document iframe {
+  flex: 1;
+  width: 100%;
+  border: 4px solid #000;
+  background: #fff;
+}
+
+.document-hint {
+  font-size: 0.8rem;
+  text-align: center;
+  opacity: 0.8;
+  margin: 0;
 }
 
 .preview-info-grid {
@@ -449,6 +470,55 @@ body {
   }
 }
 
+/* Metadata Tree Styles */
+.metadata-tree {
+  font-family: var(--font-mono);
+  font-size: 0.9rem;
+}
+
+.meta-section-item {
+  margin-bottom: 1rem;
+  border-left: 2px solid var(--color-border);
+  padding-left: 0.75rem;
+}
+
+.meta-section-title {
+  margin: 0 0 0.5rem 0;
+  text-transform: capitalize;
+  color: var(--color-primary);
+  opacity: 0.9;
+}
+
+.meta-list {
+  margin: 0;
+  padding-left: 1.25rem;
+  list-style-type: square;
+}
+
+.meta-object {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+  margin-left: 0.5rem;
+}
+
+.meta-row {
+  display: flex;
+  gap: 0.5rem;
+  align-items: flex-start;
+}
+
+.meta-key {
+  color: var(--color-text);
+  opacity: 0.7;
+  white-space: nowrap;
+}
+
+.meta-val {
+  word-break: break-all;
+  color: var(--color-text);
+}
+
 /* Mobile Responsiveness */
 @media (max-width: 768px) {
   :root {
@@ -456,12 +526,26 @@ body {
   }
 
   body {
-    padding: 1rem;
+    padding: 0.5rem;
+    /* Reduced padding for more screen space */
   }
 
   .app-shell {
-    padding: 1.5rem;
-    gap: 1.5rem;
+    padding: 1rem;
+    gap: 1rem;
+    width: 100%;
+    margin: 0;
+    border-left: none;
+    /* Full width feel */
+    border-right: none;
+    box-shadow: none;
+    /* Simplify on mobile */
+  }
+
+  /* Keep the retro decorative corners only on desktop if desired, or adjust: */
+  .app-shell::after {
+    display: none;
+    /* Hide decorative corners on mobile to prevent overflow/mess */
   }
 
   .hero {
@@ -469,6 +553,7 @@ body {
     align-items: center;
     text-align: center;
     gap: 1rem;
+    padding: 1rem 0;
   }
 
   .hero-actions {
@@ -478,26 +563,44 @@ body {
 
   .theme-toggle {
     width: 100%;
+    min-width: auto;
+    padding: 12px;
+    /* Larger touch target */
   }
 
   .card-grid {
     grid-template-columns: 1fr;
-    /* Stack cards on mobile */
     gap: 1.5rem;
   }
 
+  .card {
+    padding: 1rem;
+  }
+
   .file-list {
-    grid-template-columns: 1fr;
+    gap: 1rem;
   }
 
   .preview-header {
     flex-direction: column;
-    align-items: flex-start;
-    gap: 0.5rem;
+    align-items: stretch;
+    /* Stretch buttons */
+    gap: 0.75rem;
+  }
+
+  .preview-header h2 {
+    text-align: center;
+    margin-bottom: 0.5rem;
   }
 
   .preview-actions {
-    justify-content: center;
+    justify-content: stretch;
+    flex-direction: column;
+    gap: 0.75rem;
+  }
+
+  .preview-actions .btn {
+    width: 100%;
   }
 
   .drop-zone {
@@ -511,31 +614,41 @@ body {
   }
 
   .file-actions {
-    justify-content: stretch;
+    justify-content: flex-start;
+    flex-wrap: wrap;
+    /* Allow wrapping */
   }
 
+  /* Make buttons larger for touch */
   .file-actions .btn {
-    flex: 1;
+    flex: 1 1 45%;
+    /* occupy roughly half width */
     text-align: center;
+    min-height: 44px;
+    /* Touch friendly height */
+    display: flex;
+    align-items: center;
+    justify-content: center;
   }
 }
 
 @media (max-width: 480px) {
   :root {
     font-size: 16px;
-    /* Smaller base font */
   }
 
   .hero h1 {
-    font-size: 1.8rem;
+    font-size: 1.5rem;
   }
 
   .tagline {
-    font-size: 0.9rem;
+    font-size: 0.8rem;
   }
 
   .preview-modal {
     padding: 0;
+    align-items: flex-end;
+    /* Sheet style or just full cover */
   }
 
   .preview-modal .card {
@@ -544,5 +657,30 @@ body {
     height: 100vh;
     max-height: 100vh;
     border-radius: 0;
+    margin: 0;
+    display: flex;
+    flex-direction: column;
+  }
+
+  .preview-text,
+  .preview-media img,
+  .preview-media video {
+    max-height: 50vh;
+  }
+
+  /* Ensure toast notifications are visible and don't block too much */
+  .toast {
+    left: 1rem;
+    right: 1rem;
+    bottom: 1rem;
+    text-align: center;
+  }
+
+  .action-row {
+    flex-direction: column;
+  }
+
+  .action-row .btn {
+    width: 100%;
   }
 }

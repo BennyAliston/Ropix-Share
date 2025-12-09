@@ -10,6 +10,8 @@ from flask_socketio import SocketIO, emit
 import base64
 import uuid
 from metadata_utils import extract_metadata
+import zipfile
+import io
 
 app = Flask(__name__)
 app.secret_key = os.urandom(24)
@@ -495,6 +497,34 @@ def delete_file(file_id):
         return jsonify({'success': True})
     except KeyError:
         return jsonify({'error': 'File not found'}), 404
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/api/download-all')
+def download_all():
+    try:
+        memory_file = io.BytesIO()
+        with zipfile.ZipFile(memory_file, 'w') as zf:
+            for file_id, metadata in file_metadata.items():
+                content = base64.b64decode(metadata['content'])
+                zf.writestr(metadata['filename'], content)
+        memory_file.seek(0)
+        return Response(
+            memory_file,
+            mimetype='application/zip',
+            headers={
+                'Content-Disposition': 'attachment; filename="ropix-files.zip"'
+            }
+        )
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/api/delete-all', methods=['POST'])
+def delete_all():
+    try:
+        file_metadata.clear()
+        socketio.emit('files_cleared')
+        return jsonify({'success': True})
     except Exception as e:
         return jsonify({'error': str(e)}), 500
 

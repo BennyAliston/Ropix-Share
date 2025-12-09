@@ -179,6 +179,11 @@ function App() {
       setFiles((prev) => prev.filter((file) => file.file_id !== file_id));
     });
 
+    socket.on('files_cleared', () => {
+      setFiles([]);
+      addToast('All files cleared', 'info');
+    });
+
     socket.on('file_manifest', (data) => {
       transferManagerRef.current
         .handleManifest(data)
@@ -416,7 +421,7 @@ function App() {
             onClick={toggleTheme}
             aria-label="Toggle dark mode"
           >
-            {isDarkMode ? '🌙 Theme 2' : '☀️ Theme 1'}
+            {isDarkMode ? 'Theme 2' : 'Theme 1'}
           </button>
         </div>
       </header>
@@ -469,7 +474,29 @@ function App() {
         </section>
 
         <section className="card card-files">
-          <h2>Shared Files</h2>
+          <div className="files-header" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+            <h2>Shared Files</h2>
+            {files.length > 1 && (
+              <div className="bulk-actions" style={{ display: 'flex', gap: '0.5rem' }}>
+                <button
+                  className="btn btn-sm btn-primary"
+                  onClick={() => window.location.href = `${API_BASE}/api/download-all`}
+                >
+                  Download All
+                </button>
+                <button
+                  className="btn btn-sm btn-warning"
+                  onClick={async () => {
+                    if (confirm('Delete all files? This cannot be undone.')) {
+                      await fetch(`${API_BASE}/api/delete-all`, { method: 'POST' });
+                    }
+                  }}
+                >
+                  Delete All
+                </button>
+              </div>
+            )}
+          </div>
           {uploadStatus && <p className="upload-status">{uploadStatus}</p>}
           {files.length === 0 ? (
             <p>No files shared yet. Upload some files to get started.</p>
@@ -573,13 +600,20 @@ function App() {
               </div>
             ) : previewState.mode === 'pdf' || previewState.mode === 'document' ? (
               <div className="preview-document">
+                <div style={{ display: 'flex', justifyContent: 'flex-end' }}>
+                  <button
+                    className="btn btn-sm btn-primary"
+                    onClick={() => window.open(previewState.blobUrl, '_blank')}
+                  >
+                    ↗ Open in New Tab
+                  </button>
+                </div>
                 <iframe
                   title={`Preview ${previewState.metadata?.name}`}
                   src={previewState.blobUrl}
                 />
                 <p className="document-hint">
-                  If the document does not render, use the download button below to open it in a
-                  dedicated viewer.
+                  If the document does not render, use the button above or download it.
                 </p>
               </div>
             ) : previewState.mode === 'binary' ? (
@@ -660,23 +694,43 @@ function App() {
                 {metadataModal.data.details && Object.keys(metadataModal.data.details).length > 0 && (
                   <section style={{ marginTop: '1rem' }}>
                     <h3>Extended Details</h3>
-                    <div className="preview-info-grid">
-                      {Object.entries(metadataModal.data.details).map(([key, value]) => {
-                        if (key === 'info' || key === 'tags') {
-                          return Object.entries(value).map(([subKey, subValue]) => (
-                            <div key={subKey}>
-                              <div className="preview-label">{subKey}</div>
-                              <div style={{ wordBreak: 'break-all' }}>{String(subValue)}</div>
-                            </div>
-                          ));
-                        }
-                        return (
-                          <div key={key}>
-                            <div className="preview-label">{key}</div>
-                            <div>{String(value)}</div>
+                    <div className="metadata-tree">
+                      {(() => {
+                        const renderValue = (val) => {
+                          if (val === null || val === undefined) return <span className="meta-null">n/a</span>;
+                          if (typeof val === 'boolean') return <span className="meta-bool">{val ? 'Yes' : 'No'}</span>;
+                          if (typeof val === 'string' || typeof val === 'number') return <span>{val}</span>;
+                          if (Array.isArray(val)) {
+                            return (
+                              <ul className="meta-list">
+                                {val.map((item, idx) => (
+                                  <li key={idx}>{renderValue(item)}</li>
+                                ))}
+                              </ul>
+                            );
+                          }
+                          if (typeof val === 'object') {
+                            return (
+                              <div className="meta-object">
+                                {Object.entries(val).map(([k, v]) => (
+                                  <div key={k} className="meta-row">
+                                    <span className="meta-key">{k}:</span>
+                                    <span className="meta-val">{renderValue(v)}</span>
+                                  </div>
+                                ))}
+                              </div>
+                            );
+                          }
+                          return String(val);
+                        };
+
+                        return Object.entries(metadataModal.data.details).map(([key, value]) => (
+                          <div key={key} className="meta-section-item">
+                            <h4 className="meta-section-title">{key}</h4>
+                            <div className="meta-section-content">{renderValue(value)}</div>
                           </div>
-                        )
-                      })}
+                        ));
+                      })()}
                     </div>
                   </section>
                 )}

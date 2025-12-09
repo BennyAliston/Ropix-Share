@@ -11,7 +11,9 @@ The goal of this project is to create an accessible, browser-based alternative t
 - **Direct File Sharing**: No permanent server storage; files stream directly between peers.
 - **Live Updates**: Instant feedback via WebSockets.
 - **Chunk-based Streaming**: Efficient file transfer for large files.
-- **File Previews**: Metadata and previews for various file types.
+- **File Previews**: Metadata and previews for various file types (including PDF, Archives, Images, code/text).
+- **Advanced Metadata**: Extract EXIF from images, view archive contents, and detailed statistics for text files.
+- **Bulk Actions**: Download all files as a ZIP or delete all files in one click.
 - **Mobile Friendly**: Responsive design works on desktop and mobile.
 
 ## 📁 Project Structure
@@ -92,7 +94,7 @@ http://localhost:5000
 ## 🧩 Technologies Used
 
 - **Frontend**: React, Vite, Classnames, CSS Modules (Retro UI)
-- **Backend**: Flask, Flask-SocketIO
+- **Backend**: Flask, Flask-SocketIO (with Pillow, Mutagen for metadata)
 - **Communication**: WebSockets (Socket.IO)
 - **Language**: Python 3.x, JavaScript/TypeScript
 
