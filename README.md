@@ -19,7 +19,7 @@ The goal of this project is to create an accessible, browser-based alternative t
 ## 📁 Project Structure
 
 ```
-P2P-Sharing/
+Ropix-Share/
 │
 ├── app.py              # Flask backend server
 ├── frontend/           # React + Vite frontend
@@ -35,8 +35,8 @@ P2P-Sharing/
 
 ### 1. Clone the Repository
 ```bash
-git clone https://github.com/your-username/P2P-Sharing.git
-cd P2P-Sharing
+git clone https://github.com/your-username/Ropix-Share.git
+cd Ropix-Share
 ```
 
 ### 2. Backend Setup
