@@ -194,23 +194,22 @@ def resolve_file_metadata(file_id):
     return metadata
 
 
-@app.route('/')
-def index():
+@app.route('/', defaults={'path': ''})
+@app.route('/<path:path>')
+def serve(path):
+    if path and (FRONTEND_DIST / path).exists():
+        return send_from_directory(FRONTEND_DIST, path)
+    
+    # Check if it's an API route that wasn't caught (just in case, though Flask handles this)
+    if path.startswith('api/'):
+        return jsonify({'error': 'Not found'}), 404
+        
     index_file = FRONTEND_DIST / 'index.html'
     if index_file.exists():
         return send_from_directory(FRONTEND_DIST, 'index.html')
     return jsonify({
         'message': 'React build not found. Run `npm install && npm run dev` inside the frontend/ directory for development, or build the project with `npm run build`.'
     })
-
-
-@app.route('/assets/<path:filename>')
-def serve_assets(filename):
-    assets_dir = FRONTEND_DIST / 'assets'
-    asset_path = assets_dir / filename
-    if assets_dir.exists() and asset_path.exists():
-        return send_from_directory(assets_dir, filename)
-    return jsonify({'error': 'Asset not found'}), 404
 
 @socketio.on('connect')
 def handle_connect():
