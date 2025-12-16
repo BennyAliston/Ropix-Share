@@ -1,10 +1,25 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { io } from 'socket.io-client';
 import { createTransferManager } from './lib/transfer.js';
+import { QRCodeSVG } from 'qrcode.react';
+import { Html5Qrcode } from 'html5-qrcode';
 
 const API_BASE = '';
+
+// Parse a cleaner device name from user agent
+const getDeviceName = () => {
+  const ua = navigator.userAgent;
+  if (ua.includes('iPhone')) return 'iPhone';
+  if (ua.includes('iPad')) return 'iPad';
+  if (ua.includes('Android')) return 'Android';
+  if (ua.includes('Mac')) return 'Mac';
+  if (ua.includes('Windows')) return 'Windows PC';
+  if (ua.includes('Linux')) return 'Linux';
+  return 'Unknown Device';
+};
+
 const deviceInfo = {
-  name: navigator.userAgent,
+  name: getDeviceName(),
   platform: navigator.platform
 };
 
@@ -14,7 +29,7 @@ const initialPreviewState = {
   mode: 'text',
   content: '',
   metadata: null,
-  metadataDetails: null, // For extended metadata
+  metadataDetails: null,
   error: null,
   blobUrl: null
 };
@@ -32,9 +47,27 @@ function App() {
   const [files, setFiles] = useState([]);
   const [isDragging, setIsDragging] = useState(false);
   const [uploadStatus, setUploadStatus] = useState('');
+  const [uploadProgress, setUploadProgress] = useState(0);
   const [previewState, setPreviewState] = useState(initialPreviewState);
   const [toast, setToast] = useState(null);
   const [isDarkMode, setIsDarkMode] = useState(() => prefersDarkMode());
+
+  // Room management state
+  const [roomCode, setRoomCode] = useState(null);
+  const [roomModalOpen, setRoomModalOpen] = useState(true);
+  const [joinCode, setJoinCode] = useState('');
+  const [roomLoading, setRoomLoading] = useState(false);
+  const [roomError, setRoomError] = useState('');
+
+  // New features state
+  const [devices, setDevices] = useState([]);
+  const [showQR, setShowQR] = useState(false);
+  const [showDevices, setShowDevices] = useState(false);
+
+  // QR Scanner state
+  const [scannerOpen, setScannerOpen] = useState(false);
+  const [scannerError, setScannerError] = useState('');
+  const qrScannerRef = useRef(null);
 
   const fileInputRef = useRef(null);
   const folderInputRef = useRef(null);
@@ -206,10 +239,186 @@ function App() {
 
     socket.on('file_error', ({ error }) => addToast(error, 'error'));
 
+    // Room-related socket events
+    socket.on('room_joined', ({ room_code, file_count, device_count }) => {
+      console.log(`Joined room ${room_code} with ${file_count} files, ${device_count} devices`);
+    });
+
+    socket.on('room_error', ({ error }) => {
+      addToast(error, 'error');
+    });
+
+    // Device list updates
+    socket.on('devices_updated', ({ devices: deviceList }) => {
+      setDevices(deviceList || []);
+    });
+
     return () => {
       socket.disconnect();
     };
   }, [addToast, normalizeFile]);
+
+  // Join WebSocket room when roomCode changes
+  useEffect(() => {
+    if (roomCode && socketRef.current) {
+      socketRef.current.emit('join_room', { room_code: roomCode, device_info: deviceInfo });
+      fetchFiles();
+    }
+  }, [roomCode, fetchFiles]);
+
+  // Room action functions
+  const createRoom = async () => {
+    setRoomLoading(true);
+    setRoomError('');
+    try {
+      const response = await fetch(`${API_BASE}/api/room/create`, { method: 'POST' });
+      const data = await response.json();
+      if (response.ok && data.success) {
+        setRoomCode(data.room_code);
+        setRoomModalOpen(false);
+        addToast(`Room ${data.room_code} created!`, 'success');
+      } else {
+        setRoomError(data.error || 'Failed to create room');
+      }
+    } catch (err) {
+      setRoomError(err.message);
+    } finally {
+      setRoomLoading(false);
+    }
+  };
+
+  const joinRoom = async () => {
+    if (!joinCode.trim()) {
+      setRoomError('Please enter a room code');
+      return;
+    }
+    setRoomLoading(true);
+    setRoomError('');
+    try {
+      const response = await fetch(`${API_BASE}/api/room/join/${joinCode.trim().toUpperCase()}`, { method: 'POST' });
+      const data = await response.json();
+      if (response.ok && data.success) {
+        setRoomCode(data.room_code);
+        setRoomModalOpen(false);
+        addToast(`Joined room ${data.room_code}`, 'success');
+      } else {
+        setRoomError(data.error || 'Room not found');
+      }
+    } catch (err) {
+      setRoomError(err.message);
+    } finally {
+      setRoomLoading(false);
+    }
+  };
+
+  const leaveRoom = async () => {
+    if (roomCode && socketRef.current) {
+      socketRef.current.emit('leave_room', { room_code: roomCode });
+    }
+    await fetch(`${API_BASE}/api/room/leave`, { method: 'POST' });
+    setRoomCode(null);
+    setFiles([]);
+    setJoinCode('');
+    setRoomModalOpen(true);
+  };
+
+  const copyRoomCode = () => {
+    if (roomCode) {
+      navigator.clipboard.writeText(roomCode);
+      addToast('Room code copied!', 'success');
+    }
+  };
+
+  // QR Scanner functions
+  const startScanner = async () => {
+    setScannerOpen(true);
+    setScannerError('');
+
+    // Wait for the DOM element to be rendered
+    setTimeout(async () => {
+      try {
+        const scanner = new Html5Qrcode('qr-reader');
+        qrScannerRef.current = scanner;
+
+        await scanner.start(
+          { facingMode: 'environment' },
+          {
+            fps: 10,
+            qrbox: { width: 250, height: 250 }
+          },
+          (decodedText) => {
+            // QR code scanned successfully
+            handleScanSuccess(decodedText);
+          },
+          (errorMessage) => {
+            // Ignore scan errors (happens when no QR in frame)
+          }
+        );
+      } catch (err) {
+        console.error('Scanner error:', err);
+        setScannerError(err.message || 'Failed to access camera. Please allow camera permissions.');
+      }
+    }, 100);
+  };
+
+  const stopScanner = async () => {
+    if (qrScannerRef.current) {
+      try {
+        await qrScannerRef.current.stop();
+        qrScannerRef.current = null;
+      } catch (err) {
+        console.error('Error stopping scanner:', err);
+      }
+    }
+    setScannerOpen(false);
+    setScannerError('');
+  };
+
+  const handleScanSuccess = async (decodedText) => {
+    // Stop the scanner first
+    await stopScanner();
+
+    // Extract room code from URL or plain code
+    let code = decodedText;
+
+    // Check if it's a URL with room parameter
+    try {
+      const url = new URL(decodedText);
+      const roomParam = url.searchParams.get('room');
+      if (roomParam) {
+        code = roomParam;
+      }
+    } catch {
+      // Not a URL, use as-is (might be just the room code)
+    }
+
+    // Clean the code
+    code = code.toUpperCase().trim();
+
+    // Validate it looks like a room code (6 alphanumeric chars)
+    if (/^[A-Z0-9]{6}$/.test(code)) {
+      setJoinCode(code);
+      // Auto-join the room
+      setRoomLoading(true);
+      try {
+        const response = await fetch(`${API_BASE}/api/room/join/${code}`, { method: 'POST' });
+        const data = await response.json();
+        if (response.ok && data.success) {
+          setRoomCode(data.room_code);
+          setRoomModalOpen(false);
+          addToast(`Joined room ${data.room_code}`, 'success');
+        } else {
+          addToast(data.error || 'Room not found', 'error');
+        }
+      } catch (err) {
+        addToast(err.message, 'error');
+      } finally {
+        setRoomLoading(false);
+      }
+    } else {
+      addToast('Invalid QR code. Expected a room code.', 'error');
+    }
+  };
 
   // Apply terminal-mode class on mount
   useEffect(() => {
@@ -241,26 +450,59 @@ function App() {
   const handleFilesUpload = useCallback(
     async (fileList) => {
       if (!fileList || !fileList.length) return;
-      setUploadStatus(`Uploading ${fileList.length} file(s)…`);
+
+      const totalFiles = fileList.length;
+      let completedFiles = 0;
+
+      setUploadStatus(`Uploading ${totalFiles} file(s)…`);
+      setUploadProgress(0);
+
       for (const file of fileList) {
         const formData = new FormData();
         formData.append('file', file);
         formData.append('device_info', deviceInfo.name);
         formData.append('path', file.webkitRelativePath || file.name);
+
         try {
-          const response = await fetch(`${API_BASE}/upload`, {
-            method: 'POST',
-            body: formData
+          await new Promise((resolve, reject) => {
+            const xhr = new XMLHttpRequest();
+
+            xhr.upload.onprogress = (e) => {
+              if (e.lengthComputable) {
+                const fileProgress = (e.loaded / e.total) * 100;
+                const overallProgress = ((completedFiles + fileProgress / 100) / totalFiles) * 100;
+                setUploadProgress(Math.round(overallProgress));
+              }
+            };
+
+            xhr.onload = () => {
+              if (xhr.status >= 200 && xhr.status < 300) {
+                const payload = JSON.parse(xhr.responseText);
+                if (payload.success) {
+                  resolve(payload);
+                } else {
+                  reject(new Error(payload.error || 'Upload failed'));
+                }
+              } else {
+                reject(new Error('Upload failed'));
+              }
+            };
+
+            xhr.onerror = () => reject(new Error('Network error'));
+
+            xhr.open('POST', `${API_BASE}/upload`);
+            xhr.send(formData);
           });
-          const payload = await response.json();
-          if (!response.ok || !payload.success) {
-            throw new Error(payload.error || 'Upload failed');
-          }
+
+          completedFiles++;
+          setUploadProgress(Math.round((completedFiles / totalFiles) * 100));
         } catch (error) {
           addToast(error.message, 'error');
         }
       }
+
       setUploadStatus('');
+      setUploadProgress(0);
       addToast('Upload complete', 'success');
     },
     [addToast]
@@ -409,6 +651,92 @@ function App() {
 
   return (
     <div className="app-shell" onDrop={handleDrop} onDragOver={(e) => e.preventDefault()}>
+      {/* Room Modal - Shows when not in a room */}
+      {roomModalOpen && (
+        <div className="room-modal-overlay">
+          <div className="room-modal">
+            <h2>🔗 Join or Create Room</h2>
+            <p>Share files securely with others using a room code.</p>
+
+            {roomError && <div className="room-error">{roomError}</div>}
+
+            <div className="room-actions">
+              <div className="room-section">
+                <h3>Create New Room</h3>
+                <p>Generate a new room code to share with others</p>
+                <button
+                  className="btn btn-primary btn-large"
+                  onClick={createRoom}
+                  disabled={roomLoading}
+                >
+                  {roomLoading ? 'Creating...' : '🆕 Create Room'}
+                </button>
+              </div>
+
+              <div className="room-divider">or</div>
+
+              <div className="room-section">
+                <h3>Join Existing Room</h3>
+                <p>Enter a 6-character room code or scan QR</p>
+                <div className="room-join-form">
+                  <input
+                    type="text"
+                    className="room-code-input"
+                    value={joinCode}
+                    onChange={(e) => setJoinCode(e.target.value.toUpperCase())}
+                    placeholder="ABCD12"
+                    maxLength={6}
+                    onKeyDown={(e) => e.key === 'Enter' && joinRoom()}
+                  />
+                  <button
+                    className="btn btn-primary"
+                    onClick={joinRoom}
+                    disabled={roomLoading || !joinCode.trim()}
+                  >
+                    {roomLoading ? 'Joining...' : 'Join'}
+                  </button>
+                </div>
+                <button
+                  className="btn btn-outline btn-scan-qr"
+                  onClick={startScanner}
+                  disabled={roomLoading}
+                >
+                  📷 Scan QR Code
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* QR Scanner Modal */}
+      {scannerOpen && (
+        <div className="scanner-modal-overlay">
+          <div className="scanner-modal">
+            <div className="scanner-header">
+              <h3>📷 Scan Room QR Code</h3>
+              <button className="btn btn-sm btn-outline" onClick={stopScanner}>
+                ✕ Close
+              </button>
+            </div>
+
+            {scannerError ? (
+              <div className="scanner-error">
+                <p>{scannerError}</p>
+                <button className="btn btn-primary" onClick={stopScanner}>
+                  Close
+                </button>
+              </div>
+            ) : (
+              <div className="scanner-content">
+                <div id="qr-reader" className="qr-reader-container"></div>
+                <p className="scanner-hint">Point your camera at a room QR code</p>
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+
       <header className="hero">
         <div>
           <h1>Ropix Share</h1>
@@ -425,6 +753,69 @@ function App() {
           </button>
         </div>
       </header>
+
+      {/* Room Banner - Shows current room */}
+      {roomCode && (
+        <div className="room-banner">
+          <div className="room-info">
+            <span className="room-label">Room:</span>
+            <span className="room-code">{roomCode}</span>
+            <button className="btn btn-sm btn-outline" onClick={copyRoomCode} title="Copy room code">
+              📋 Copy
+            </button>
+            <button className="btn btn-sm btn-outline" onClick={() => setShowQR(!showQR)} title="Show QR Code">
+              {showQR ? '✕ Hide QR' : '📱 QR'}
+            </button>
+            <button className="btn btn-sm btn-outline" onClick={() => setShowDevices(!showDevices)} title="Show Devices">
+              👥 {devices.length} device{devices.length !== 1 ? 's' : ''}
+            </button>
+          </div>
+          <button className="btn btn-sm btn-warning" onClick={leaveRoom}>
+            Leave Room
+          </button>
+        </div>
+      )}
+
+      {/* QR Code Panel */}
+      {showQR && roomCode && (
+        <div className="qr-panel">
+          <div className="qr-content">
+            <h3>Scan to Join Room</h3>
+            <QRCodeSVG
+              value={`${window.location.origin}?room=${roomCode}`}
+              size={180}
+              bgColor="transparent"
+              fgColor="var(--color-primary)"
+              level="M"
+            />
+            <p className="qr-code-text">{roomCode}</p>
+          </div>
+        </div>
+      )}
+
+      {/* Device List Panel */}
+      {showDevices && roomCode && (
+        <div className="devices-panel">
+          <h3>Connected Devices ({devices.length})</h3>
+          {devices.length === 0 ? (
+            <p className="no-devices">No other devices connected yet</p>
+          ) : (
+            <ul className="device-list">
+              {devices.map((device) => (
+                <li key={device.id} className="device-item">
+                  <span className="device-icon">
+                    {device.platform?.includes('Mac') || device.name?.includes('Mac') ? '💻' :
+                      device.name?.includes('iPhone') || device.name?.includes('iPad') ? '📱' :
+                        device.name?.includes('Android') ? '📱' :
+                          device.name?.includes('Windows') ? '🖥️' : '💻'}
+                  </span>
+                  <span className="device-name">{device.name}</span>
+                </li>
+              ))}
+            </ul>
+          )}
+        </div>
+      )}
 
       <div className="card-grid">
         <section className="card card-upload">
@@ -471,6 +862,19 @@ function App() {
               directory="true"
             />
           </div>
+
+          {/* Upload Progress */}
+          {uploadStatus && (
+            <div className="upload-progress-container">
+              <div className="upload-progress-text">{uploadStatus} {uploadProgress}%</div>
+              <div className="progress-bar">
+                <div
+                  className="progress-fill"
+                  style={{ width: `${uploadProgress}%` }}
+                />
+              </div>
+            </div>
+          )}
         </section>
 
         <section className="card card-files">

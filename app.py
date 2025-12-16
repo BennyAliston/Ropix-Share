@@ -2,114 +2,112 @@ import os
 from pathlib import Path
 import hashlib
 import binascii
-from flask import Flask, request, jsonify, Response, send_from_directory
+from flask import Flask, request, jsonify, Response, send_from_directory, session
 import mimetypes
 import re
 from datetime import datetime
-from flask_socketio import SocketIO, emit
+from flask_socketio import SocketIO, emit, join_room, leave_room
 import base64
 import uuid
 from metadata_utils import extract_metadata
 import zipfile
 import io
-import socket
-import ipaddress
-from functools import wraps
+import string
+import random
 
 app = Flask(__name__)
-
-# Network validation utilities
-def get_server_networks():
-    """Get all local network interfaces and their network ranges."""
-    networks = []
-    try:
-        # Get all network interfaces
-        hostname = socket.gethostname()
-        # Get all IPs associated with this host
-        addrs = socket.getaddrinfo(hostname, None, socket.AF_INET)
-        
-        for addr in addrs:
-            ip = addr[4][0]
-            # Skip loopback
-            if ip.startswith('127.'):
-                continue
-            # Assume /24 subnet for typical local networks
-            # This covers most home/office networks
-            try:
-                network = ipaddress.ip_network(f"{ip}/24", strict=False)
-                networks.append(network)
-            except ValueError:
-                pass
-        
-        # Also try to get IPs directly from socket
-        try:
-            local_ip = socket.gethostbyname(hostname)
-            if not local_ip.startswith('127.'):
-                network = ipaddress.ip_network(f"{local_ip}/24", strict=False)
-                if network not in networks:
-                    networks.append(network)
-        except socket.gaierror:
-            pass
-            
-    except Exception as e:
-        print(f"Error detecting networks: {e}")
-    
-    # Always allow localhost connections
-    networks.append(ipaddress.ip_network("127.0.0.0/8"))
-    
-    return networks
-
-def get_client_ip():
-    """Get the client's IP address, handling proxies if present."""
-    # Check for forwarded headers (in case behind a proxy)
-    if request.headers.get('X-Forwarded-For'):
-        # Take the first IP in the chain (original client)
-        return request.headers.get('X-Forwarded-For').split(',')[0].strip()
-    elif request.headers.get('X-Real-IP'):
-        return request.headers.get('X-Real-IP')
-    else:
-        return request.remote_addr
-
-def is_same_network(client_ip):
-    """Check if the client IP is on the same network as the server."""
-    try:
-        client_addr = ipaddress.ip_address(client_ip)
-        server_networks = get_server_networks()
-        
-        for network in server_networks:
-            if client_addr in network:
-                return True
-        
-        return False
-    except ValueError:
-        # Invalid IP address
-        return False
-
-def require_same_network(f):
-    """Decorator to require that requests come from the same network."""
-    @wraps(f)
-    def decorated_function(*args, **kwargs):
-        client_ip = get_client_ip()
-        
-        if not is_same_network(client_ip):
-            return jsonify({
-                'error': 'Access denied. You must be on the same network to access this file sharing service.',
-                'your_ip': client_ip
-            }), 403
-        
-        return f(*args, **kwargs)
-    return decorated_function
 app.secret_key = os.urandom(24)
 socketio = SocketIO(app, cors_allowed_origins="*", ping_timeout=60, ping_interval=25)
 BASE_DIR = Path(__file__).resolve().parent
 FRONTEND_DIST = BASE_DIR / 'frontend' / 'dist'
 app.config['UPLOAD_FOLDER'] = str(BASE_DIR)
 
-# In-memory file storage for direct sharing
-active_transfers = {}
-file_metadata = {}
+# =============================================================================
+# ROOM-BASED FILE SHARING SYSTEM
+# =============================================================================
 
-CHUNK_SIZE = 64 * 1024  # 64KB chunks strike a balance between latency and overhead
+# Room storage: { room_code: { files: {}, devices: {sid: info}, created_at, last_activity } }
+rooms = {}
+
+# Track socket ID to room mapping for disconnect handling
+socket_to_room = {}
+
+def generate_room_code():
+    """Generate a unique 6-character room code."""
+    chars = string.ascii_uppercase + string.digits
+    while True:
+        code = ''.join(random.choices(chars, k=6))
+        if code not in rooms:
+            return code
+
+def get_current_room():
+    """Get the room code from the current session."""
+    return session.get('room_code')
+
+def set_current_room(room_code):
+    """Set the room code in the current session."""
+    session['room_code'] = room_code
+
+def get_room_files(room_code):
+    """Get all files in a room."""
+    if room_code and room_code in rooms:
+        return rooms[room_code].get('files', {})
+    return {}
+
+def get_room_devices(room_code):
+    """Get all devices in a room."""
+    if room_code and room_code in rooms:
+        return rooms[room_code].get('devices', {})
+    return {}
+
+MAX_DEVICES_PER_ROOM = 10
+
+def add_device_to_room(room_code, sid, device_info):
+    """Add a device to a room. Returns False if room is full."""
+    if room_code and room_code in rooms:
+        # Check device limit
+        current_devices = len(rooms[room_code].get('devices', {}))
+        if current_devices >= MAX_DEVICES_PER_ROOM:
+            return False  # Room is full
+        
+        rooms[room_code]['devices'][sid] = {
+            'name': device_info.get('name', 'Unknown Device'),
+            'platform': device_info.get('platform', 'Unknown'),
+            'joined_at': datetime.now().isoformat()
+        }
+        socket_to_room[sid] = room_code
+        rooms[room_code]['last_activity'] = datetime.now().isoformat()
+        return True
+    return False
+
+def remove_device_from_room(sid):
+    """Remove a device from its room."""
+    room_code = socket_to_room.pop(sid, None)
+    if room_code and room_code in rooms:
+        rooms[room_code]['devices'].pop(sid, None)
+        return room_code
+    return None
+
+def add_file_to_room(room_code, file_id, metadata):
+    """Add a file to a room."""
+    if room_code and room_code in rooms:
+        rooms[room_code]['files'][file_id] = metadata
+        rooms[room_code]['last_activity'] = datetime.now().isoformat()
+        return True
+    return False
+
+def remove_file_from_room(room_code, file_id):
+    """Remove a file from a room."""
+    if room_code and room_code in rooms:
+        if file_id in rooms[room_code]['files']:
+            del rooms[room_code]['files'][file_id]
+            return True
+    return False
+
+# Legacy compatibility - keep file_metadata as alias
+file_metadata = {}  # This will be deprecated, rooms store files now
+
+CHUNK_SIZE = 64 * 1024  # 64KB chunks
 
 # Supported preview file types with MIME type validation
 PREVIEW_TYPES = {
@@ -263,12 +261,22 @@ def sanitize_relative_path(path_value):
     return '/'.join(safe_parts)
 
 
-def resolve_file_metadata(file_id):
+def resolve_file_metadata(file_id, room_code=None):
     """
-    Map the user-visible file ID to the safe metadata entry. This ensures peers
-    cannot coerce us into reading arbitrary paths because all lookups go through
-    server-generated IDs.
+    Look up file metadata, optionally within a specific room.
     """
+    # First check room-based storage
+    if room_code and room_code in rooms:
+        room_files = rooms[room_code].get('files', {})
+        if file_id in room_files:
+            metadata = room_files[file_id]
+            if 'content' not in metadata:
+                raise ValueError('Missing file content')
+            if 'manifest' not in metadata or 'manifest_signature' not in metadata:
+                raise ValueError('Missing manifest data')
+            return metadata
+    
+    # Fallback to legacy global storage
     metadata = file_metadata.get(file_id)
     if not metadata:
         raise KeyError('File not found')
@@ -279,14 +287,113 @@ def resolve_file_metadata(file_id):
     return metadata
 
 
+# =============================================================================
+# ROOM API ENDPOINTS
+# =============================================================================
+
+@app.route('/api/room/create', methods=['POST'])
+def create_room():
+    """Create a new room and return the room code."""
+    room_code = generate_room_code()
+    rooms[room_code] = {
+        'files': {},
+        'devices': {},
+        'created_at': datetime.now().isoformat(),
+        'last_activity': datetime.now().isoformat()
+    }
+    set_current_room(room_code)
+    print(f'Room created: {room_code}')
+    return jsonify({
+        'success': True,
+        'room_code': room_code,
+        'message': f'Room {room_code} created. Share this code with others to let them join.'
+    })
+
+@app.route('/api/room/join/<room_code>', methods=['POST'])
+def join_room_api(room_code):
+    """Join an existing room."""
+    room_code = room_code.upper()
+    if room_code not in rooms:
+        return jsonify({'error': 'Room not found. Check the code and try again.'}), 404
+    
+    # Check device limit
+    current_devices = len(rooms[room_code].get('devices', {}))
+    if current_devices >= MAX_DEVICES_PER_ROOM:
+        return jsonify({'error': f'Room is full ({current_devices}/{MAX_DEVICES_PER_ROOM} devices)'}), 403
+    
+    set_current_room(room_code)
+    rooms[room_code]['last_activity'] = datetime.now().isoformat()
+    
+    # Count files in room
+    file_count = len(rooms[room_code].get('files', {}))
+    print(f'Client joined room: {room_code}')
+    
+    return jsonify({
+        'success': True,
+        'room_code': room_code,
+        'file_count': file_count,
+        'message': f'Joined room {room_code}'
+    })
+
+@app.route('/api/room/info')
+def room_info():
+    """Get info about current room."""
+    room_code = get_current_room()
+    if not room_code or room_code not in rooms:
+        return jsonify({
+            'in_room': False,
+            'message': 'Not in a room. Create or join a room to start sharing.'
+        })
+    
+    room = rooms[room_code]
+    return jsonify({
+        'in_room': True,
+        'room_code': room_code,
+        'file_count': len(room.get('files', {})),
+        'device_count': len(room.get('devices', {})),
+        'created_at': room.get('created_at'),
+        'last_activity': room.get('last_activity')
+    })
+
+@app.route('/api/room/devices')
+def room_devices():
+    """Get list of devices in current room."""
+    room_code = get_current_room()
+    if not room_code or room_code not in rooms:
+        return jsonify({'devices': [], 'error': 'Not in a room'})
+    
+    devices = get_room_devices(room_code)
+    device_list = [
+        {
+            'id': sid[:8],  # Shortened ID for privacy
+            'name': info.get('name', 'Unknown'),
+            'platform': info.get('platform', 'Unknown'),
+            'joined_at': info.get('joined_at')
+        }
+        for sid, info in devices.items()
+    ]
+    return jsonify({'devices': device_list, 'count': len(device_list)})
+
+@app.route('/api/room/leave', methods=['POST'])
+def leave_room_api():
+    """Leave current room."""
+    room_code = get_current_room()
+    if room_code:
+        session.pop('room_code', None)
+    return jsonify({'success': True, 'message': 'Left room'})
+
+
+# =============================================================================
+# STATIC FILES
+# =============================================================================
+
 @app.route('/', defaults={'path': ''})
 @app.route('/<path:path>')
-@require_same_network
 def serve(path):
     if path and (FRONTEND_DIST / path).exists():
         return send_from_directory(FRONTEND_DIST, path)
     
-    # Check if it's an API route that wasn't caught (just in case, though Flask handles this)
+    # Check if it's an API route that wasn't caught
     if path.startswith('api/'):
         return jsonify({'error': 'Not found'}), 404
         
@@ -297,19 +404,38 @@ def serve(path):
         'message': 'React build not found. Run `npm install && npm run dev` inside the frontend/ directory for development, or build the project with `npm run build`.'
     })
 
+
+# =============================================================================
+# WEBSOCKET HANDLERS
+# =============================================================================
+
 @socketio.on('connect')
 def handle_connect():
-    # Validate that the client is on the same network
-    from flask import request as flask_request
-    client_ip = flask_request.remote_addr
+    print(f'Client connected: {request.sid}')
+
+@socketio.on('join_room')
+def handle_join_room(data):
+    """Handle client joining a room via WebSocket."""
+    room_code = data.get('room_code', '').upper()
+    device_info = data.get('device_info', {})
     
-    if not is_same_network(client_ip):
-        print(f'Connection rejected from {client_ip} - not on same network')
-        return False  # Reject the connection
+    if not room_code or room_code not in rooms:
+        emit('room_error', {'error': 'Room not found'})
+        return
     
-    print(f'Client connected from {client_ip}')
-    # Send current files to newly connected client
-    for file_id, metadata in file_metadata.items():
+    # Add device to room tracking (checks limit)
+    if not add_device_to_room(room_code, request.sid, device_info):
+        emit('room_error', {'error': 'Room is full (max 10 devices)'})
+        return
+    
+    # Join the WebSocket room
+    join_room(room_code)
+    
+    print(f'Client {request.sid[:8]} joined room: {room_code}')
+    
+    # Send all files in the room to the newly joined client
+    room_files = rooms[room_code].get('files', {})
+    for file_id, metadata in room_files.items():
         emit('file_available', {
             'file_id': file_id,
             'filename': metadata['filename'],
@@ -322,19 +448,67 @@ def handle_connect():
             'chunks': len(metadata['manifest']['chunks']),
             'uploaded_at': metadata['created_at']
         })
+    
+    # Get updated device list
+    devices = get_room_devices(room_code)
+    device_list = [
+        {'id': sid[:8], 'name': info.get('name', 'Unknown'), 'platform': info.get('platform')}
+        for sid, info in devices.items()
+    ]
+    
+    emit('room_joined', {
+        'room_code': room_code, 
+        'file_count': len(room_files),
+        'device_count': len(devices)
+    })
+    
+    # Broadcast updated device list to all in room
+    socketio.emit('devices_updated', {'devices': device_list, 'count': len(device_list)}, room=room_code)
+
+@socketio.on('leave_room')
+def handle_leave_room(data):
+    """Handle client leaving a room."""
+    room_code = data.get('room_code', '').upper()
+    if room_code:
+        leave_room(room_code)
+        # Remove device tracking
+        remove_device_from_room(request.sid)
+        
+        # Broadcast updated device list
+        if room_code in rooms:
+            devices = get_room_devices(room_code)
+            device_list = [
+                {'id': sid[:8], 'name': info.get('name', 'Unknown'), 'platform': info.get('platform')}
+                for sid, info in devices.items()
+            ]
+            socketio.emit('devices_updated', {'devices': device_list, 'count': len(device_list)}, room=room_code)
+        
+        print(f'Client {request.sid[:8]} left room: {room_code}')
 
 @socketio.on('disconnect')
 def handle_disconnect():
-    print('Client disconnected')
+    # Clean up device from any room they were in
+    room_code = remove_device_from_room(request.sid)
+    if room_code and room_code in rooms:
+        devices = get_room_devices(room_code)
+        device_list = [
+            {'id': sid[:8], 'name': info.get('name', 'Unknown'), 'platform': info.get('platform')}
+            for sid, info in devices.items()
+        ]
+        socketio.emit('devices_updated', {'devices': device_list, 'count': len(device_list)}, room=room_code)
+    print(f'Client disconnected: {request.sid[:8]}')
 
 @socketio.on('request_file')
 def handle_file_request(data):
     file_id = data.get('file_id')
+    room_code = data.get('room_code', '').upper()
+    
     if not file_id:
         emit('file_error', {'error': 'Missing file_id'})
         return
+    
     try:
-        metadata = resolve_file_metadata(file_id)
+        metadata = resolve_file_metadata(file_id, room_code)
     except (KeyError, ValueError) as exc:
         emit('file_error', {'error': str(exc)})
         return
@@ -351,7 +525,7 @@ def handle_file_request(data):
 
     try:
         file_bytes = base64.b64decode(metadata['content'])
-    except (ValueError, binascii.Error) as exc:  # need binascii import?
+    except (ValueError, binascii.Error) as exc:
         emit('file_error', {'error': f'Corrupted file content: {exc}'})
         return
 
@@ -371,11 +545,15 @@ def handle_file_request(data):
 
 
 @app.route('/upload', methods=['POST'])
-@require_same_network
 def upload_file():
     try:
         if 'file' not in request.files:
             return jsonify({'error': 'No file provided'}), 400
+        
+        # Check if user is in a room
+        room_code = get_current_room()
+        if not room_code or room_code not in rooms:
+            return jsonify({'error': 'You must join a room before uploading files'}), 400
         
         file = request.files['file']
         device_info = request.form.get('device_info', 'Unknown Device')
@@ -400,7 +578,7 @@ def upload_file():
         file_type = get_file_type(file.filename)
         mime_type = mimetypes.guess_type(file.filename)[0] or 'application/octet-stream'
         
-        file_metadata[file_id] = {
+        metadata = {
             'filename': file.filename,
             'file_type': file_type,
             'mime_type': mime_type,
@@ -410,11 +588,14 @@ def upload_file():
             'device_info': device_info,
             'safe_path': safe_relative_path,
             'manifest': manifest,
-            'manifest_signature': manifest_signature
+            'manifest_signature': manifest_signature,
+            'room_code': room_code
         }
-        metadata = file_metadata[file_id]
         
-        # Broadcast to all connected clients
+        # Add file to the room
+        add_file_to_room(room_code, file_id, metadata)
+        
+        # Broadcast to all clients in the room
         socketio.emit('file_available', {
             'file_id': file_id,
             'filename': file.filename,
@@ -426,23 +607,27 @@ def upload_file():
             'safe_path': metadata.get('safe_path', metadata['filename']),
             'chunks': len(metadata['manifest']['chunks']),
             'uploaded_at': metadata['created_at']
-        })
+        }, room=room_code)
+        
+        print(f'File uploaded: {file.filename} (Room: {room_code})')
         
         return jsonify({
             'success': True,
             'file_id': file_id,
             'filename': file.filename,
-            'type': file_type
+            'type': file_type,
+            'room_code': room_code
         })
                 
     except Exception as e:
         return jsonify({'error': str(e)}), 500
 
 @app.route('/download/<file_id>')
-@require_same_network
 def download_file(file_id):
     try:
-        metadata = resolve_file_metadata(file_id)
+        room_code = get_current_room()
+        metadata = resolve_file_metadata(file_id, room_code)
+        
         file_content = base64.b64decode(metadata['content'])
         
         return Response(
@@ -461,13 +646,17 @@ def download_file(file_id):
         return jsonify({'error': str(e)}), 500
 
 @app.route('/file-info/<file_id>')
-@require_same_network
 def file_info(file_id):
     try:
-        if file_id not in file_metadata:
+        room_code = get_current_room()
+        if not room_code or room_code not in rooms:
+            return jsonify({'error': 'Not in a room'}), 400
+            
+        room_files = rooms[room_code].get('files', {})
+        if file_id not in room_files:
             return jsonify({'error': 'File not found'}), 404
             
-        metadata = file_metadata[file_id]
+        metadata = room_files[file_id]
         
         return jsonify({
             'name': metadata['filename'],
@@ -489,11 +678,15 @@ def file_info(file_id):
 
 
 @app.route('/api/files')
-@require_same_network
 def api_files():
     try:
+        room_code = get_current_room()
+        if not room_code or room_code not in rooms:
+            return jsonify({'files': [], 'in_room': False, 'message': 'Not in a room'})
+        
+        room_files = rooms[room_code].get('files', {})
         files = []
-        for file_id, metadata in file_metadata.items():
+        for file_id, metadata in room_files.items():
             files.append({
                 'file_id': file_id,
                 'filename': metadata['filename'],
@@ -506,15 +699,15 @@ def api_files():
                 'uploaded_at': metadata['created_at'],
                 'chunks': len(metadata['manifest']['chunks'])
             })
-        return jsonify({'files': files})
+        return jsonify({'files': files, 'room_code': room_code, 'in_room': True})
     except Exception as e:
         return jsonify({'error': str(e)}), 500
 
 @app.route('/metadata/<file_id>')
-@require_same_network
 def get_metadata(file_id):
     try:
-        metadata = resolve_file_metadata(file_id)
+        room_code = get_current_room()
+        metadata = resolve_file_metadata(file_id, room_code)
         
         # Decode content for extraction
         try:
@@ -540,10 +733,11 @@ def get_metadata(file_id):
         return jsonify({'error': str(e)}), 500
 
 @app.route('/preview/<file_id>')
-@require_same_network
 def preview_file(file_id):
     try:
-        metadata = resolve_file_metadata(file_id)
+        room_code = get_current_room()
+        metadata = resolve_file_metadata(file_id, room_code)
+        
         file_content = base64.b64decode(metadata['content'])
         
         if metadata['file_type'] == 'text' or metadata['file_type'] == 'code':
@@ -577,36 +771,46 @@ def preview_file(file_id):
         return jsonify({'error': str(e)}), 500
 
 @app.route('/delete/<file_id>', methods=['POST'])
-@require_same_network
 def delete_file(file_id):
     try:
-        metadata = resolve_file_metadata(file_id)
+        room_code = get_current_room()
+        if not room_code or room_code not in rooms:
+            return jsonify({'error': 'Not in a room'}), 400
+            
+        room_files = rooms[room_code].get('files', {})
+        if file_id not in room_files:
+            return jsonify({'error': 'File not found'}), 404
+        
+        metadata = room_files[file_id]
         device_info = request.form.get('device_info', 'Unknown Device')
         filename = metadata['filename']
         
-        # Remove from memory
-        del file_metadata[file_id]
+        # Remove from room
+        remove_file_from_room(room_code, file_id)
         
-        # Broadcast deletion to all clients
+        # Broadcast deletion to the room
         socketio.emit('file_deleted', {
             'file_id': file_id,
             'filename': filename,
             'device_info': device_info
-        })
+        }, room=room_code)
         
         return jsonify({'success': True})
-    except KeyError:
-        return jsonify({'error': 'File not found'}), 404
     except Exception as e:
         return jsonify({'error': str(e)}), 500
 
 @app.route('/api/download-all')
-@require_same_network
 def download_all():
     try:
+        room_code = get_current_room()
+        if not room_code or room_code not in rooms:
+            return jsonify({'error': 'Not in a room'}), 400
+        
+        room_files = rooms[room_code].get('files', {})
+        
         memory_file = io.BytesIO()
         with zipfile.ZipFile(memory_file, 'w') as zf:
-            for file_id, metadata in file_metadata.items():
+            for file_id, metadata in room_files.items():
                 content = base64.b64decode(metadata['content'])
                 zf.writestr(metadata['filename'], content)
         memory_file.seek(0)
@@ -614,21 +818,55 @@ def download_all():
             memory_file,
             mimetype='application/zip',
             headers={
-                'Content-Disposition': 'attachment; filename="ropix-files.zip"'
+                'Content-Disposition': f'attachment; filename="ropix-room-{room_code}.zip"'
             }
         )
     except Exception as e:
         return jsonify({'error': str(e)}), 500
 
 @app.route('/api/delete-all', methods=['POST'])
-@require_same_network
 def delete_all():
     try:
-        file_metadata.clear()
-        socketio.emit('files_cleared')
-        return jsonify({'success': True})
+        room_code = get_current_room()
+        if not room_code or room_code not in rooms:
+            return jsonify({'error': 'Not in a room'}), 400
+        
+        file_count = len(rooms[room_code].get('files', {}))
+        rooms[room_code]['files'] = {}
+        
+        # Broadcast to room
+        socketio.emit('files_cleared', room=room_code)
+        return jsonify({'success': True, 'deleted_count': file_count})
     except Exception as e:
         return jsonify({'error': str(e)}), 500
 
+@app.route('/api/room-status')
+def room_status():
+    """Debug endpoint for room status."""
+    room_code = get_current_room()
+    
+    if not room_code or room_code not in rooms:
+        return jsonify({
+            'in_room': False,
+            'message': 'Create or join a room to start sharing files.',
+            'total_rooms': len(rooms)
+        })
+    
+    room = rooms[room_code]
+    room_files = room.get('files', {})
+    
+    return jsonify({
+        'in_room': True,
+        'room_code': room_code,
+        'file_count': len(room_files),
+        'files': [{'id': fid[:8], 'name': m.get('filename')} for fid, m in room_files.items()],
+        'created_at': room.get('created_at'),
+        'total_rooms': len(rooms)
+    })
+
 if __name__ == '__main__':
+    print("\n=== Ropix Share - Room-Based File Sharing ===")
+    print("Create or join a room to share files securely.")
+    print("Only people with the room code can see your files.")
+    print("==============================================\n")
     socketio.run(app, debug=True, host='0.0.0.0', port=5000) 
