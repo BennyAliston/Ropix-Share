@@ -130,9 +130,13 @@ function App() {
   const [scannerError, setScannerError] = useState('');
   const qrScannerRef = useRef(null);
 
+  // Receiving file state (for showing animation on other devices)
+  const [receivingFile, setReceivingFile] = useState(null); // { filename, progress, device_info }
+
   const fileInputRef = useRef(null);
   const folderInputRef = useRef(null);
   const socketRef = useRef(null);
+  const uploadXhrRef = useRef(null); // For cancelling uploads
   const transferManagerRef = useRef(
     createTransferManager((fileId, blob, filename) => {
       const url = URL.createObjectURL(blob);
@@ -223,14 +227,16 @@ function App() {
     [supportedDocumentExtensions]
   );
 
-  const fetchFiles = useCallback(async () => {
-    const response = await fetch(`${API_BASE}/api/files`);
+  const fetchFiles = useCallback(async (roomCodeParam) => {
+    const code = roomCodeParam || roomCode;
+    const url = code ? `${API_BASE}/api/files?room_code=${code}` : `${API_BASE}/api/files`;
+    const response = await fetch(url);
     if (!response.ok) {
       throw new Error('Unable to load files');
     }
     const data = await response.json();
     setFiles((data.files || []).map(normalizeFile));
-  }, [normalizeFile]);
+  }, [normalizeFile, roomCode]);
 
   useEffect(() => {
     fetchFiles().catch((err) => console.error(err));
@@ -311,7 +317,61 @@ function App() {
 
     // Device list updates
     socket.on('devices_updated', ({ devices: deviceList }) => {
-      setDevices(deviceList || []);
+      setDevices((prevDevices) => {
+        const newDevices = deviceList || [];
+        // Check if a new device joined (more devices than before)
+        if (newDevices.length > prevDevices.length && prevDevices.length > 0) {
+          // Find the new device(s)
+          const prevIds = new Set(prevDevices.map(d => d.id));
+          const joinedDevices = newDevices.filter(d => !prevIds.has(d.id));
+          joinedDevices.forEach(d => {
+            addToast(`📱 ${d.name || 'A device'} joined the room!`, 'success');
+          });
+        } else if (newDevices.length < prevDevices.length) {
+          // A device left
+          addToast(`👋 A device left the room`, 'info');
+        }
+        return newDevices;
+      });
+    });
+
+    // Receiving file events (for showing animation when another device uploads)
+    socket.on('receiving_file', (data) => {
+      setReceivingFile({
+        filename: data.filename,
+        progress: 0,
+        device_info: data.device_info,
+        size: data.size
+      });
+    });
+
+    socket.on('receiving_progress', (data) => {
+      setReceivingFile((prev) => prev ? { ...prev, progress: data.progress } : null);
+    });
+
+    socket.on('receiving_complete', () => {
+      // Keep showing for a moment then clear
+      setTimeout(() => setReceivingFile(null), 1500);
+    });
+
+    // Listen for cancel signal from server (when all receivers dismiss)
+    socket.on('cancel_upload', ({ reason }) => {
+      console.log('Upload cancelled by server:', reason);
+      // Abort current upload if any
+      if (uploadXhrRef.current) {
+        uploadXhrRef.current.abort();
+      }
+      addToast(`⚠️ ${reason}`, 'info');
+    });
+
+    // Re-join room on reconnection
+    socket.on('connect', () => {
+      console.log('Socket connected');
+      // Re-join room if we have one
+      const storedRoom = sessionStorage.getItem('ropix-room-code');
+      if (storedRoom) {
+        socket.emit('join_room', { room_code: storedRoom, device_info: deviceInfo });
+      }
     });
 
     return () => {
@@ -322,8 +382,12 @@ function App() {
   // Join WebSocket room when roomCode changes
   useEffect(() => {
     if (roomCode && socketRef.current) {
+      // Store in sessionStorage for reconnection
+      sessionStorage.setItem('ropix-room-code', roomCode);
       socketRef.current.emit('join_room', { room_code: roomCode, device_info: deviceInfo });
       fetchFiles();
+    } else if (!roomCode) {
+      sessionStorage.removeItem('ropix-room-code');
     }
   }, [roomCode, fetchFiles]);
 
@@ -523,23 +587,56 @@ function App() {
         formData.append('file', file);
         formData.append('device_info', deviceInfo.name);
         formData.append('path', file.webkitRelativePath || file.name);
+        if (roomCode) {
+          formData.append('room_code', roomCode);
+        }
+
+        // Notify other devices that upload is starting
+        if (socketRef.current && roomCode) {
+          socketRef.current.emit('upload_start', {
+            room_code: roomCode,
+            filename: file.name,
+            size: file.size,
+            device_info: deviceInfo.name
+          });
+        }
 
         try {
           await new Promise((resolve, reject) => {
             const xhr = new XMLHttpRequest();
+            uploadXhrRef.current = xhr; // Store for cancellation
 
             xhr.upload.onprogress = (e) => {
               if (e.lengthComputable) {
                 const fileProgress = (e.loaded / e.total) * 100;
                 const overallProgress = ((completedFiles + fileProgress / 100) / totalFiles) * 100;
                 setUploadProgress(Math.round(overallProgress));
+
+                // Broadcast progress to other devices
+                if (socketRef.current && roomCode) {
+                  socketRef.current.emit('upload_progress', {
+                    room_code: roomCode,
+                    filename: file.name,
+                    progress: Math.round(fileProgress),
+                    device_info: deviceInfo.name
+                  });
+                }
               }
             };
 
             xhr.onload = () => {
+              uploadXhrRef.current = null;
               if (xhr.status >= 200 && xhr.status < 300) {
                 const payload = JSON.parse(xhr.responseText);
                 if (payload.success) {
+                  // Notify other devices that upload is complete
+                  if (socketRef.current && roomCode) {
+                    socketRef.current.emit('upload_complete', {
+                      room_code: roomCode,
+                      filename: file.name,
+                      device_info: deviceInfo.name
+                    });
+                  }
                   resolve(payload);
                 } else {
                   reject(new Error(payload.error || 'Upload failed'));
@@ -549,7 +646,24 @@ function App() {
               }
             };
 
-            xhr.onerror = () => reject(new Error('Network error'));
+            xhr.onerror = () => {
+              uploadXhrRef.current = null;
+              reject(new Error('Network error'));
+            };
+
+            xhr.onabort = () => {
+              uploadXhrRef.current = null;
+              // Notify other devices upload was cancelled
+              if (socketRef.current && roomCode) {
+                socketRef.current.emit('upload_complete', {
+                  room_code: roomCode,
+                  filename: file.name,
+                  device_info: deviceInfo.name,
+                  cancelled: true
+                });
+              }
+              reject(new Error('Upload cancelled'));
+            };
 
             xhr.open('POST', `${API_BASE}/upload`);
             xhr.send(formData);
@@ -561,16 +675,29 @@ function App() {
           // Show playful message for uploaded file
           addToast(getPlayfulMessage(file), 'info');
         } catch (error) {
-          addToast(error.message, 'error');
+          if (error.message !== 'Upload cancelled') {
+            addToast(error.message, 'error');
+          }
         }
       }
 
+      uploadXhrRef.current = null;
       setUploadStatus('');
       setUploadProgress(0);
       // Playful messages are already shown per file
     },
-    [addToast]
+    [addToast, roomCode]
   );
+
+  // Cancel upload function
+  const cancelUpload = useCallback(() => {
+    if (uploadXhrRef.current) {
+      uploadXhrRef.current.abort();
+      addToast('Upload cancelled', 'info');
+    }
+    setUploadStatus('');
+    setUploadProgress(0);
+  }, [addToast]);
 
   const handleFileInput = useCallback(
     (event) => {
@@ -915,22 +1042,32 @@ function App() {
               onChange={handleFileInput}
               style={{ display: 'none' }}
               multiple
+              accept="*/*"
             />
+            {/* Folder input - note: webkitdirectory doesn't work on mobile */}
             <input
               type="file"
               ref={folderInputRef}
               onChange={handleFileInput}
               style={{ display: 'none' }}
-              webkitdirectory="true"
-              mozdirectory="true"
-              directory="true"
+              multiple
+              webkitdirectory=""
+              directory=""
             />
           </div>
 
           {/* Upload Progress */}
           {uploadStatus && (
             <div className="upload-progress-container">
-              <div className="upload-progress-text">{uploadStatus} {uploadProgress}%</div>
+              <div className="progress-header">
+                <div className="upload-progress-text">{uploadStatus} {uploadProgress}%</div>
+                <button
+                  className="btn btn-sm btn-warning cancel-btn"
+                  onClick={cancelUpload}
+                >
+                  ✕ Cancel
+                </button>
+              </div>
               <div className="progress-bar">
                 <div
                   className="progress-fill"
@@ -939,13 +1076,42 @@ function App() {
               </div>
             </div>
           )}
+
+          {/* Receiving File Progress (from another device) */}
+          {receivingFile && (
+            <div className="upload-progress-container receiving">
+              <div className="progress-header">
+                <div className="upload-progress-text">
+                  📥 Receiving "{receivingFile.filename}" from {receivingFile.device_info}… {receivingFile.progress}%
+                </div>
+                <button
+                  className="btn btn-sm btn-outline cancel-btn"
+                  onClick={() => {
+                    // Notify server that this receiver dismissed
+                    if (socketRef.current && roomCode) {
+                      socketRef.current.emit('dismiss_receiving', { room_code: roomCode });
+                    }
+                    setReceivingFile(null);
+                  }}
+                >
+                  ✕ Dismiss
+                </button>
+              </div>
+              <div className="progress-bar">
+                <div
+                  className="progress-fill receiving-fill"
+                  style={{ width: `${receivingFile.progress}%` }}
+                />
+              </div>
+            </div>
+          )}
         </section>
 
         <section className="card card-files">
-          <div className="files-header" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+          <div className="files-header">
             <h2>Shared Files</h2>
             {files.length > 1 && (
-              <div className="bulk-actions" style={{ display: 'flex', gap: '0.5rem' }}>
+              <div className="bulk-actions">
                 <button
                   className="btn btn-sm btn-primary"
                   onClick={() => window.location.href = `${API_BASE}/api/download-all`}
@@ -1080,6 +1246,22 @@ function App() {
                   title={`Preview ${previewState.metadata?.name}`}
                   src={previewState.blobUrl}
                 />
+                {/* Mobile fallback - shown instead of iframe on mobile */}
+                <div className="mobile-pdf-fallback">
+                  <p>📄 PDF preview is not supported in mobile browsers.</p>
+                  <button
+                    className="btn btn-primary"
+                    onClick={() => window.open(previewState.blobUrl, '_blank')}
+                  >
+                    📂 Open PDF
+                  </button>
+                  <button
+                    className="btn btn-outline"
+                    onClick={() => downloadFile(previewState.metadata?.file_id)}
+                  >
+                    ⬇ Download File
+                  </button>
+                </div>
                 <p className="document-hint">
                   If the document does not render, use the button above or download it.
                 </p>

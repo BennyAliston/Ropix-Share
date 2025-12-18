@@ -13,12 +13,15 @@
 ### 📁 File Transfer
 - **Direct Sharing**: Files stream directly between peers (no server storage)
 - **Real-time Progress**: Upload progress bars with percentage
+- **Receiving Animation**: Other devices see live progress when files are being uploaded
 - **Chunk-based Streaming**: Efficient transfer for large files
 - **Bulk Actions**: Download all as ZIP or delete all files
+- **Cancel Upload**: Cancel uploads from either the sender or receivers
+- **Auto-Cancel**: Upload automatically cancels if all receivers dismiss
 
 ### 👥 Connected Devices
 - **Device List**: See who's connected to your room
-- **Real-time Updates**: Instant join/leave notifications
+- **Real-time Notifications**: Toast alerts when devices join or leave
 - **Device Names**: Friendly names (iPhone, Mac, Windows PC, etc.)
 
 ### 🎨 Themes & Animations
@@ -30,10 +33,16 @@
 
 ### 📱 File Previews
 - Images, Videos, Audio
-- PDFs and Documents
+- PDFs and Documents (mobile-friendly with open/download options)
 - Code/Text with syntax details
 - Archive contents (ZIP)
 - EXIF metadata for photos
+
+### 📱 Responsive Design
+- **Mobile-First**: Fully responsive UI for all screen sizes
+- **Touch-Friendly**: Large touch targets for buttons and actions
+- **Truncated Filenames**: Long filenames display with ellipsis
+- **Adaptive Layout**: Cards stack vertically on mobile
 
 ## 🛠️ Quick Start
 
@@ -78,8 +87,9 @@ Open http://localhost:5000
 
 1. **Create/Join Room**: Get a 6-char code or scan QR
 2. **Share Files**: Upload files visible to all room members
-3. **Download**: Stream files directly to your device
-4. **Leave**: Files remain for others until room is empty
+3. **Real-time Sync**: All devices see upload progress live
+4. **Download**: Stream files directly to your device
+5. **Leave**: Files remain for others until room is empty
 
 ## 🧩 Tech Stack
 
@@ -92,6 +102,7 @@ Open http://localhost:5000
 ```
 Ropix-Share/
 ├── app.py              # Flask backend + WebSocket handlers
+├── metadata_utils.py   # File metadata extraction utilities
 ├── frontend/
 │   ├── src/
 │   │   ├── App.jsx     # Main React component
@@ -99,6 +110,15 @@ Ropix-Share/
 │   └── dist/           # Production build (served by Flask)
 └── requirements.txt    # Python dependencies
 ```
+
+## 🔄 Recent Updates
+
+- **Receiving Animation**: Real-time progress bar on other devices when files are uploading
+- **Cancel Upload**: Both sender and receivers can cancel transfers
+- **Device Join/Leave Notifications**: Toast alerts when devices connect or disconnect
+- **Improved Mobile UI**: Better responsive layout, truncated filenames, touch-friendly buttons
+- **PDF Mobile Support**: PDFs open in native viewer on mobile devices
+- **Cross-Device Sync Fix**: Files now sync reliably across all devices in a room
 
 ## 📜 License
 

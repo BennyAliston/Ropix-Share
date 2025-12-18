@@ -543,6 +543,92 @@ def handle_file_request(data):
 
     emit('file_transfer_complete', {'file_id': file_id})
 
+# =============================================================================
+# UPLOAD PROGRESS BROADCASTING (for receiving animation on other devices)
+# =============================================================================
+
+# Track active uploads: { room_code: { uploader_sid, filename, receiver_count, dismissed_count } }
+active_uploads = {}
+
+
+@socketio.on('upload_start')
+def handle_upload_start(data):
+    """Broadcast that a file upload has started."""
+    room_code = data.get('room_code', '').upper() or socket_to_room.get(request.sid)
+    print(f'[DEBUG] upload_start from {request.sid[:8]}, room: {room_code}, file: {data.get("filename")}')
+    if not room_code or room_code not in rooms:
+        return
+    
+    # Count receivers (other devices in room)
+    receiver_count = len(rooms[room_code].get('devices', {})) - 1
+    
+    # Track this upload
+    active_uploads[room_code] = {
+        'uploader_sid': request.sid,
+        'filename': data.get('filename', 'Unknown file'),
+        'receiver_count': max(receiver_count, 0),
+        'dismissed_count': 0
+    }
+    
+    # Broadcast to other clients in the room (exclude sender)
+    socketio.emit('receiving_file', {
+        'filename': data.get('filename', 'Unknown file'),
+        'size': data.get('size', 0),
+        'device_info': data.get('device_info', 'Unknown Device'),
+        'progress': 0
+    }, room=room_code, skip_sid=[request.sid])
+
+
+@socketio.on('upload_progress')
+def handle_upload_progress(data):
+    """Broadcast upload progress to other devices."""
+    room_code = data.get('room_code', '').upper() or socket_to_room.get(request.sid)
+    if not room_code:
+        return
+    
+    socketio.emit('receiving_progress', {
+        'filename': data.get('filename', 'Unknown file'),
+        'progress': data.get('progress', 0),
+        'device_info': data.get('device_info', 'Unknown Device')
+    }, room=room_code, skip_sid=[request.sid])
+
+
+@socketio.on('upload_complete')
+def handle_upload_complete(data):
+    """Broadcast that upload is complete."""
+    room_code = data.get('room_code', '').upper() or socket_to_room.get(request.sid)
+    print(f'[DEBUG] upload_complete from {request.sid[:8]}, room: {room_code}')
+    if not room_code:
+        return
+    
+    # Clear active upload tracking
+    active_uploads.pop(room_code, None)
+    
+    socketio.emit('receiving_complete', {
+        'filename': data.get('filename', 'Unknown file'),
+        'device_info': data.get('device_info', 'Unknown Device')
+    }, room=room_code, skip_sid=[request.sid])
+
+
+@socketio.on('dismiss_receiving')
+def handle_dismiss_receiving(data):
+    """Handle when a receiver dismisses the receiving notification."""
+    room_code = data.get('room_code', '').upper() or socket_to_room.get(request.sid)
+    if not room_code or room_code not in active_uploads:
+        return
+    
+    upload = active_uploads[room_code]
+    upload['dismissed_count'] += 1
+    print(f'[DEBUG] dismiss_receiving: {upload["dismissed_count"]}/{upload["receiver_count"]} dismissed')
+    
+    # If all receivers dismissed, notify the uploader to cancel
+    if upload['dismissed_count'] >= upload['receiver_count'] and upload['receiver_count'] > 0:
+        print(f'[DEBUG] All receivers dismissed, cancelling upload for {upload["uploader_sid"][:8]}')
+        socketio.emit('cancel_upload', {
+            'reason': 'All receiving devices dismissed the transfer'
+        }, to=upload['uploader_sid'])
+        active_uploads.pop(room_code, None)
+
 
 @app.route('/upload', methods=['POST'])
 def upload_file():
@@ -550,8 +636,8 @@ def upload_file():
         if 'file' not in request.files:
             return jsonify({'error': 'No file provided'}), 400
         
-        # Check if user is in a room
-        room_code = get_current_room()
+        # Check if user is in a room - allow explicit room_code from form (for cross-device sync)
+        room_code = (request.form.get('room_code', '') or '').upper() or get_current_room()
         if not room_code or room_code not in rooms:
             return jsonify({'error': 'You must join a room before uploading files'}), 400
         
@@ -680,7 +766,8 @@ def file_info(file_id):
 @app.route('/api/files')
 def api_files():
     try:
-        room_code = get_current_room()
+        # Allow explicit room_code query param (for cross-device sync)
+        room_code = request.args.get('room_code', '').upper() or get_current_room()
         if not room_code or room_code not in rooms:
             return jsonify({'files': [], 'in_room': False, 'message': 'Not in a room'})
         
