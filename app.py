@@ -14,6 +14,7 @@ import zipfile
 import io
 import string
 import random
+from urllib.parse import quote as url_quote
 
 app = Flask(__name__)
 app.secret_key = os.urandom(24)
@@ -102,6 +103,23 @@ def remove_file_from_room(room_code, file_id):
         if file_id in rooms[room_code]['files']:
             del rooms[room_code]['files'][file_id]
             return True
+    return False
+
+# Global (non-room) file storage shared across all devices on the network
+global_files = {}
+
+LOBBY_ROOM = '__lobby__'
+
+def add_file_to_global(file_id, metadata):
+    """Add a file to the global shared storage."""
+    global_files[file_id] = metadata
+    return True
+
+def remove_file_from_global(file_id):
+    """Remove a file from the global shared storage."""
+    if file_id in global_files:
+        del global_files[file_id]
+        return True
     return False
 
 # Legacy compatibility - keep file_metadata as alias
@@ -204,6 +222,20 @@ def format_file_size(size):
         return "0 B"  # Return a default value if size is invalid
 
 
+def safe_content_disposition(disposition, filename):
+    """
+    Build a Content-Disposition header that handles filenames with special
+    characters (quotes, non-ASCII, etc.) using RFC 5987 encoding.
+    """
+    # ASCII-safe fallback: strip non-ASCII, replace quotes
+    ascii_name = filename.encode('ascii', 'ignore').decode('ascii').replace('"', '_')
+    if not ascii_name:
+        ascii_name = 'download'
+    # RFC 5987 UTF-8 encoded filename
+    utf8_name = url_quote(filename, safe='')
+    return f'{disposition}; filename="{ascii_name}"; filename*=UTF-8\'\'{utf8_name}'
+
+
 def compute_manifest_signature(manifest):
     """
     Build a deterministic signature for the manifest so receivers can verify
@@ -263,9 +295,9 @@ def sanitize_relative_path(path_value):
 
 def resolve_file_metadata(file_id, room_code=None):
     """
-    Look up file metadata, optionally within a specific room.
+    Look up file metadata: room storage -> global shared -> legacy.
     """
-    # First check room-based storage
+    # Check room-based storage
     if room_code and room_code in rooms:
         room_files = rooms[room_code].get('files', {})
         if file_id in room_files:
@@ -275,7 +307,16 @@ def resolve_file_metadata(file_id, room_code=None):
             if 'manifest' not in metadata or 'manifest_signature' not in metadata:
                 raise ValueError('Missing manifest data')
             return metadata
-    
+
+    # Check global shared storage
+    if file_id in global_files:
+        metadata = global_files[file_id]
+        if 'content' not in metadata:
+            raise ValueError('Missing file content')
+        if 'manifest' not in metadata or 'manifest_signature' not in metadata:
+            raise ValueError('Missing manifest data')
+        return metadata
+
     # Fallback to legacy global storage
     metadata = file_metadata.get(file_id)
     if not metadata:
@@ -411,7 +452,9 @@ def serve(path):
 
 @socketio.on('connect')
 def handle_connect():
-    print(f'Client connected: {request.sid}')
+    # All clients start in the lobby for global file sharing
+    join_room(LOBBY_ROOM)
+    print(f'Client connected: {request.sid} (joined lobby)')
 
 @socketio.on('join_room')
 def handle_join_room(data):
@@ -428,7 +471,8 @@ def handle_join_room(data):
         emit('room_error', {'error': 'Room is full (max 10 devices)'})
         return
     
-    # Join the WebSocket room
+    # Leave lobby and join the WebSocket room
+    leave_room(LOBBY_ROOM)
     join_room(room_code)
     
     print(f'Client {request.sid[:8]} joined room: {room_code}')
@@ -471,6 +515,8 @@ def handle_leave_room(data):
     room_code = data.get('room_code', '').upper()
     if room_code:
         leave_room(room_code)
+        # Rejoin lobby for global file sharing
+        join_room(LOBBY_ROOM)
         # Remove device tracking
         remove_device_from_room(request.sid)
         
@@ -638,8 +684,7 @@ def upload_file():
         
         # Check if user is in a room - allow explicit room_code from form (for cross-device sync)
         room_code = (request.form.get('room_code', '') or '').upper() or get_current_room()
-        if not room_code or room_code not in rooms:
-            return jsonify({'error': 'You must join a room before uploading files'}), 400
+        use_room = room_code and room_code in rooms
         
         file = request.files['file']
         device_info = request.form.get('device_info', 'Unknown Device')
@@ -675,14 +720,9 @@ def upload_file():
             'safe_path': safe_relative_path,
             'manifest': manifest,
             'manifest_signature': manifest_signature,
-            'room_code': room_code
         }
-        
-        # Add file to the room
-        add_file_to_room(room_code, file_id, metadata)
-        
-        # Broadcast to all clients in the room
-        socketio.emit('file_available', {
+
+        file_event_data = {
             'file_id': file_id,
             'filename': file.filename,
             'file_type': file_type,
@@ -693,16 +733,28 @@ def upload_file():
             'safe_path': metadata.get('safe_path', metadata['filename']),
             'chunks': len(metadata['manifest']['chunks']),
             'uploaded_at': metadata['created_at']
-        }, room=room_code)
-        
-        print(f'File uploaded: {file.filename} (Room: {room_code})')
-        
+        }
+
+        if use_room:
+            metadata['room_code'] = room_code
+            add_file_to_room(room_code, file_id, metadata)
+            # Broadcast to all clients in the room
+            socketio.emit('file_available', file_event_data, room=room_code)
+            print(f'File uploaded: {file.filename} (Room: {room_code})')
+        else:
+            add_file_to_global(file_id, metadata)
+            # Broadcast to all clients in the lobby
+            socketio.emit('file_available', file_event_data, room=LOBBY_ROOM)
+            print(f'File uploaded: {file.filename} (Global)')
+
         return jsonify({
             'success': True,
             'file_id': file_id,
             'filename': file.filename,
             'type': file_type,
-            'room_code': room_code
+            'storage': 'room' if use_room else 'global',
+            'room_code': room_code if use_room else None,
+            **file_event_data
         })
                 
     except Exception as e:
@@ -720,7 +772,7 @@ def download_file(file_id):
             file_content,
             mimetype=metadata['mime_type'],
             headers={
-                'Content-Disposition': f'attachment; filename="{metadata["filename"]}"',
+                'Content-Disposition': safe_content_disposition('attachment', metadata['filename']),
                 'Content-Length': str(metadata['size'])
             }
         )
@@ -735,14 +787,16 @@ def download_file(file_id):
 def file_info(file_id):
     try:
         room_code = get_current_room()
-        if not room_code or room_code not in rooms:
-            return jsonify({'error': 'Not in a room'}), 400
-            
-        room_files = rooms[room_code].get('files', {})
-        if file_id not in room_files:
+
+        # Try room first, then global
+        metadata = None
+        if room_code and room_code in rooms:
+            room_files = rooms[room_code].get('files', {})
+            metadata = room_files.get(file_id)
+        if not metadata:
+            metadata = global_files.get(file_id)
+        if not metadata:
             return jsonify({'error': 'File not found'}), 404
-            
-        metadata = room_files[file_id]
         
         return jsonify({
             'name': metadata['filename'],
@@ -768,12 +822,16 @@ def api_files():
     try:
         # Allow explicit room_code query param (for cross-device sync)
         room_code = request.args.get('room_code', '').upper() or get_current_room()
-        if not room_code or room_code not in rooms:
-            return jsonify({'files': [], 'in_room': False, 'message': 'Not in a room'})
-        
-        room_files = rooms[room_code].get('files', {})
+
+        if room_code and room_code in rooms:
+            source_files = rooms[room_code].get('files', {})
+            mode = 'room'
+        else:
+            source_files = global_files
+            mode = 'global'
+
         files = []
-        for file_id, metadata in room_files.items():
+        for file_id, metadata in source_files.items():
             files.append({
                 'file_id': file_id,
                 'filename': metadata['filename'],
@@ -786,7 +844,12 @@ def api_files():
                 'uploaded_at': metadata['created_at'],
                 'chunks': len(metadata['manifest']['chunks'])
             })
-        return jsonify({'files': files, 'room_code': room_code, 'in_room': True})
+        return jsonify({
+            'files': files,
+            'room_code': room_code if mode == 'room' else None,
+            'in_room': mode == 'room',
+            'mode': mode
+        })
     except Exception as e:
         return jsonify({'error': str(e)}), 500
 
@@ -848,7 +911,7 @@ def preview_file(file_id):
             return Response(
                 file_content,
                 mimetype=metadata['mime_type'],
-                headers={'Content-Disposition': f'inline; filename="{metadata["filename"]}"'}
+                headers={'Content-Disposition': safe_content_disposition('inline', metadata['filename'])}
             )
     except KeyError:
         return jsonify({'error': 'File not found'}), 404
@@ -861,27 +924,30 @@ def preview_file(file_id):
 def delete_file(file_id):
     try:
         room_code = get_current_room()
-        if not room_code or room_code not in rooms:
-            return jsonify({'error': 'Not in a room'}), 400
-            
-        room_files = rooms[room_code].get('files', {})
-        if file_id not in room_files:
-            return jsonify({'error': 'File not found'}), 404
-        
-        metadata = room_files[file_id]
         device_info = request.form.get('device_info', 'Unknown Device')
-        filename = metadata['filename']
-        
-        # Remove from room
-        remove_file_from_room(room_code, file_id)
-        
-        # Broadcast deletion to the room
-        socketio.emit('file_deleted', {
-            'file_id': file_id,
-            'filename': filename,
-            'device_info': device_info
-        }, room=room_code)
-        
+
+        if room_code and room_code in rooms:
+            room_files = rooms[room_code].get('files', {})
+            if file_id not in room_files:
+                return jsonify({'error': 'File not found'}), 404
+            filename = room_files[file_id]['filename']
+            remove_file_from_room(room_code, file_id)
+            socketio.emit('file_deleted', {
+                'file_id': file_id,
+                'filename': filename,
+                'device_info': device_info
+            }, room=room_code)
+        else:
+            if file_id not in global_files:
+                return jsonify({'error': 'File not found'}), 404
+            filename = global_files[file_id]['filename']
+            remove_file_from_global(file_id)
+            socketio.emit('file_deleted', {
+                'file_id': file_id,
+                'filename': filename,
+                'device_info': device_info
+            }, room=LOBBY_ROOM)
+
         return jsonify({'success': True})
     except Exception as e:
         return jsonify({'error': str(e)}), 500
@@ -890,14 +956,20 @@ def delete_file(file_id):
 def download_all():
     try:
         room_code = get_current_room()
-        if not room_code or room_code not in rooms:
-            return jsonify({'error': 'Not in a room'}), 400
-        
-        room_files = rooms[room_code].get('files', {})
-        
+
+        if room_code and room_code in rooms:
+            source_files = rooms[room_code].get('files', {})
+            zip_name = f'ropix-room-{room_code}.zip'
+        else:
+            source_files = global_files
+            zip_name = 'ropix-files.zip'
+
+        if not source_files:
+            return jsonify({'error': 'No files to download'}), 400
+
         memory_file = io.BytesIO()
         with zipfile.ZipFile(memory_file, 'w') as zf:
-            for file_id, metadata in room_files.items():
+            for file_id, metadata in source_files.items():
                 content = base64.b64decode(metadata['content'])
                 zf.writestr(metadata['filename'], content)
         memory_file.seek(0)
@@ -905,7 +977,7 @@ def download_all():
             memory_file,
             mimetype='application/zip',
             headers={
-                'Content-Disposition': f'attachment; filename="ropix-room-{room_code}.zip"'
+                'Content-Disposition': safe_content_disposition('attachment', zip_name)
             }
         )
     except Exception as e:
@@ -915,14 +987,16 @@ def download_all():
 def delete_all():
     try:
         room_code = get_current_room()
-        if not room_code or room_code not in rooms:
-            return jsonify({'error': 'Not in a room'}), 400
-        
-        file_count = len(rooms[room_code].get('files', {}))
-        rooms[room_code]['files'] = {}
-        
-        # Broadcast to room
-        socketio.emit('files_cleared', room=room_code)
+
+        if room_code and room_code in rooms:
+            file_count = len(rooms[room_code].get('files', {}))
+            rooms[room_code]['files'] = {}
+            socketio.emit('files_cleared', room=room_code)
+        else:
+            file_count = len(global_files)
+            global_files.clear()
+            socketio.emit('files_cleared', room=LOBBY_ROOM)
+
         return jsonify({'success': True, 'deleted_count': file_count})
     except Exception as e:
         return jsonify({'error': str(e)}), 500

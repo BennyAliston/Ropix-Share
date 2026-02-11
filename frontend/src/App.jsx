@@ -115,7 +115,7 @@ function App() {
 
   // Room management state
   const [roomCode, setRoomCode] = useState(null);
-  const [roomModalOpen, setRoomModalOpen] = useState(true);
+  const [roomModalOpen, setRoomModalOpen] = useState(false);
   const [joinCode, setJoinCode] = useState('');
   const [roomLoading, setRoomLoading] = useState(false);
   const [roomError, setRoomError] = useState('');
@@ -385,11 +385,40 @@ function App() {
       // Store in sessionStorage for reconnection
       sessionStorage.setItem('ropix-room-code', roomCode);
       socketRef.current.emit('join_room', { room_code: roomCode, device_info: deviceInfo });
-      fetchFiles();
     } else if (!roomCode) {
       sessionStorage.removeItem('ropix-room-code');
     }
-  }, [roomCode, fetchFiles]);
+  }, [roomCode]);
+
+  // Auto-join room from URL parameter (e.g. ?room=ABCD12 from QR code)
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    const roomParam = params.get('room');
+    if (roomParam && /^[A-Z0-9]{6}$/i.test(roomParam.trim())) {
+      const code = roomParam.trim().toUpperCase();
+      setJoinCode(code);
+      (async () => {
+        setRoomLoading(true);
+        try {
+          const response = await fetch(`${API_BASE}/api/room/join/${code}`, { method: 'POST' });
+          const data = await response.json();
+          if (response.ok && data.success) {
+            setRoomCode(data.room_code);
+            setRoomModalOpen(false);
+            addToast(`Joined room ${data.room_code}`, 'success');
+          } else {
+            setRoomError(data.error || 'Room not found');
+          }
+        } catch (err) {
+          setRoomError(err.message);
+        } finally {
+          setRoomLoading(false);
+        }
+      })();
+      // Clean the URL without reloading the page
+      window.history.replaceState({}, '', window.location.pathname);
+    }
+  }, [addToast]);
 
   // Room action functions
   const createRoom = async () => {
@@ -443,8 +472,12 @@ function App() {
     await fetch(`${API_BASE}/api/room/leave`, { method: 'POST' });
     setRoomCode(null);
     setFiles([]);
+    setDevices([]);
     setJoinCode('');
-    setRoomModalOpen(true);
+    setShowQR(false);
+    setShowDevices(false);
+    fetchFiles();
+    addToast('Left room', 'info');
   };
 
   const copyRoomCode = () => {
@@ -828,26 +861,22 @@ function App() {
     [addToast]
   );
 
-  const dragListeners = useMemo(
-    () => ({
-      onDragOver: (event) => {
-        event.preventDefault();
-        setIsDragging(true);
-      },
-      onDragLeave: () => setIsDragging(false),
-      onDrop: handleDrop
-    }),
-    [handleDrop]
-  );
-
   return (
     <div className="app-shell" onDrop={handleDrop} onDragOver={(e) => e.preventDefault()}>
-      {/* Room Modal - Shows when not in a room */}
+      {/* Room Modal - Shows when user wants to share via room */}
       {roomModalOpen && (
         <div className="room-modal-overlay">
           <div className="room-modal">
-            <h2>🔗 Join or Create Room</h2>
-            <p>Share files securely with others using a room code.</p>
+            <div className="room-modal-header">
+              <h2>Share via Room</h2>
+              <button
+                className="btn btn-sm btn-outline"
+                onClick={() => { setRoomModalOpen(false); setRoomError(''); }}
+              >
+                Cancel
+              </button>
+            </div>
+            <p>Share files across devices using a room code.</p>
 
             {roomError && <div className="room-error">{roomError}</div>}
 
@@ -934,6 +963,15 @@ function App() {
           <p className="tagline">Simple, secure file sharing</p>
         </div>
         <div className="hero-actions">
+          {!roomCode && (
+            <button
+              className="btn btn-primary"
+              type="button"
+              onClick={() => setRoomModalOpen(true)}
+            >
+              Share via Room
+            </button>
+          )}
           <button
             className="btn btn-outline theme-toggle"
             type="button"
@@ -1109,7 +1147,7 @@ function App() {
 
         <section className="card card-files">
           <div className="files-header">
-            <h2>Shared Files</h2>
+            <h2>{roomCode ? `Room ${roomCode}` : 'My Files'}</h2>
             {files.length > 1 && (
               <div className="bulk-actions">
                 <button
@@ -1133,7 +1171,11 @@ function App() {
           </div>
           {uploadStatus && <p className="upload-status">{uploadStatus}</p>}
           {files.length === 0 ? (
-            <p>No files shared yet. Upload some files to get started.</p>
+            <p>
+              {roomCode
+                ? 'No files in this room yet. Upload some files to share.'
+                : 'No files yet. Upload some files to get started.'}
+            </p>
           ) : (
             <div className="file-list">
               {files.map((file) => (
@@ -1193,7 +1235,7 @@ function App() {
               <h2>Preview: {previewState.metadata?.name}</h2>
               <button
                 className="btn btn-sm btn-outline preview-close"
-                onClick={() => setPreviewState(initialPreviewState)}
+                onClick={closePreview}
               >
                 Close
               </button>

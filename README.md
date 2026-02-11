@@ -1,50 +1,56 @@
 # Ropix Share
 
-**Ropix Share** is a lightweight, real-time file sharing web application with a **Retro Pixel Art UI**. Built with **React + Vite** frontend and **Flask + Socket.IO** backend, it enables instant file sharing through shareable room codes no installation required.
+**Ropix Share** is a lightweight, real-time file sharing web application with a **Retro Pixel Art UI**. Built with **React + Vite** frontend and **Flask + Socket.IO** backend, it enables instant file sharing across devices on the same network — no installation required.
 
-## ✨ Features
+## Features
 
-### 🔗 Room-Based Sharing
-- **Room Codes**: Create or join rooms with 6-character codes
+### Open Sharing (Default)
+- **Instant LAN Sharing**: Upload files and they appear on all connected devices automatically
+- **No Setup Required**: Just open the app on any device on the same network
+- **Real-time Sync**: Files broadcast to all devices via WebSocket lobby
+
+### Room-Based Sharing (Selective)
+- **Private Rooms**: Create a room when you want to share with specific people only
+- **Room Codes**: 6-character codes for easy sharing
 - **QR Code Sharing**: Generate QR codes for instant room joining
 - **QR Scanner**: Scan QR codes with your camera to join rooms
 - **Device Limit**: Up to 10 devices per room
 
-### 📁 File Transfer
-- **Direct Sharing**: Files stream directly between peers (no server storage)
+### File Transfer
 - **Real-time Progress**: Upload progress bars with percentage
 - **Receiving Animation**: Other devices see live progress when files are being uploaded
-- **Chunk-based Streaming**: Efficient transfer for large files
+- **Chunk-based Integrity**: Manifest-based verification for file integrity
 - **Bulk Actions**: Download all as ZIP or delete all files
 - **Cancel Upload**: Cancel uploads from either the sender or receivers
 - **Auto-Cancel**: Upload automatically cancels if all receivers dismiss
+- **Special Character Support**: Filenames with unicode and special characters handled via RFC 5987
 
-### 👥 Connected Devices
+### Connected Devices
 - **Device List**: See who's connected to your room
 - **Real-time Notifications**: Toast alerts when devices join or leave
 - **Device Names**: Friendly names (iPhone, Mac, Windows PC, etc.)
 
-### 🎨 Themes & Animations
+### Themes & Animations
 | Theme 1 (Warm) | Theme 2 (Cool) |
 |----------------|----------------|
 | Retro pixel color cycling | Neon cyber glitch effects |
 | 8-bit style animations | Chromatic aberration glow |
 | Bounce hover effects | Pulse glow on buttons |
 
-### 📱 File Previews
+### File Previews
 - Images, Videos, Audio
 - PDFs and Documents (mobile-friendly with open/download options)
 - Code/Text with syntax details
 - Archive contents (ZIP)
 - EXIF metadata for photos
 
-### 📱 Responsive Design
+### Responsive Design
 - **Mobile-First**: Fully responsive UI for all screen sizes
 - **Touch-Friendly**: Large touch targets for buttons and actions
 - **Truncated Filenames**: Long filenames display with ellipsis
 - **Adaptive Layout**: Cards stack vertically on mobile
 
-## 🛠️ Quick Start
+## Quick Start
 
 ```bash
 # Clone
@@ -68,9 +74,19 @@ python app.py
 
 Open http://localhost:5000
 
-## 📡 How It Works
+## How It Works
 
 ```
+             Default Mode (No Room)
+┌─────────────────┐     ┌─────────────────┐
+│   Device A      │     │   Device B      │
+│  Upload files   │────▶│  Files appear   │
+│  instantly      │◀────│  automatically  │
+└─────────────────┘     └─────────────────┘
+        All devices on the network share files
+                via WebSocket lobby
+
+           Room Mode (Selective Sharing)
 ┌─────────────────┐     ┌─────────────────┐
 │   Device A      │     │   Device B      │
 │  Create Room    │────▶│  Join via Code  │
@@ -80,24 +96,24 @@ Open http://localhost:5000
          ▼                       ▼
     ┌────────────────────────────────┐
     │        Room: ABC123            │
-    │   Files shared in real-time    │
+    │   Only room members see files  │
     │   Max 10 devices per room      │
     └────────────────────────────────┘
 ```
 
-1. **Create/Join Room**: Get a 6-char code or scan QR
-2. **Share Files**: Upload files visible to all room members
-3. **Real-time Sync**: All devices see upload progress live
-4. **Download**: Stream files directly to your device
-5. **Leave**: Files remain for others until room is empty
+1. **Open the app** on any device on the same network
+2. **Upload files** — they appear on all connected devices instantly
+3. **Need privacy?** Click "Share via Room" to create a private room
+4. **Share the room code** or QR with specific people
+5. **Leave the room** to return to open sharing mode
 
-## 🧩 Tech Stack
+## Tech Stack
 
 - **Frontend**: React, Vite, Socket.IO Client, QRCode.react, html5-qrcode
 - **Backend**: Flask, Flask-SocketIO, Pillow, Mutagen
 - **Styling**: Custom CSS with retro pixel art theme
 
-## 📁 Structure
+## Structure
 
 ```
 Ropix-Share/
@@ -111,15 +127,19 @@ Ropix-Share/
 └── requirements.txt    # Python dependencies
 ```
 
-## 🔄 Recent Updates
+## Recent Updates
 
+- **Open Sharing Mode**: Files now share across all devices by default without needing a room
+- **Optional Rooms**: Room-based sharing is now opt-in for when you need selective/private sharing
+- **Lobby System**: WebSocket lobby broadcasts file events to all non-room devices
+- **RFC 5987 Filenames**: Content-Disposition headers handle unicode and special characters
+- **Auto-Join via URL**: Join rooms directly with `?room=CODE` URL parameter
 - **Receiving Animation**: Real-time progress bar on other devices when files are uploading
 - **Cancel Upload**: Both sender and receivers can cancel transfers
 - **Device Join/Leave Notifications**: Toast alerts when devices connect or disconnect
 - **Improved Mobile UI**: Better responsive layout, truncated filenames, touch-friendly buttons
 - **PDF Mobile Support**: PDFs open in native viewer on mobile devices
-- **Cross-Device Sync Fix**: Files now sync reliably across all devices in a room
 
-## 📜 License
+## License
 
 MIT License
