@@ -980,6 +980,20 @@ function App() {
           >
             {isDarkMode ? 'Theme 2' : 'Theme 1'}
           </button>
+          <a
+            href="https://buymeacoffee.com/bennyaliston"
+            target="_blank"
+            rel="noopener noreferrer"
+            className="btn bmc-button"
+            aria-label="Buy me a coffee"
+          >
+            <img
+              src="https://cdn.buymeacoffee.com/buttons/bmc-new-btn-logo.svg"
+              alt=""
+              style={{ height: '20px', width: '20px', marginRight: '6px' }}
+            />
+            <span>Buy me a coffee</span>
+          </a>
         </div>
       </header>
 

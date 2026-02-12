@@ -515,6 +515,31 @@ body {
   min-width: 140px;
 }
 
+.bmc-button {
+  display: inline-flex;
+  align-items: center;
+  background: #FFDD00;
+  color: #000;
+  text-decoration: none;
+  font-family: var(--font-pixel);
+  font-size: 0.7rem;
+  padding: 10px 16px;
+  border: var(--border-thickness) solid #000;
+  box-shadow: inset -4px -4px 0 rgba(0, 0, 0, 0.2);
+  transition: all 0.15s ease;
+}
+
+.bmc-button:hover {
+  background: #FFCC00;
+  transform: translateY(-2px);
+  box-shadow: inset -4px -4px 0 rgba(0, 0, 0, 0.2), 0 4px 0 rgba(0,0,0,0.3);
+}
+
+.bmc-button:active {
+  transform: translate(2px, 2px);
+  box-shadow: inset 4px 4px 0 rgba(0, 0, 0, 0.3);
+}
+
 /* Card -> RPG Window / Terminal Box */
 .card {
   background: var(--color-surface-alt);
