@@ -182,7 +182,7 @@ Ropix-Share/
 
 ## License
 
-This project is licensed under the MIT License — see the [LICENSE](LICENSE) file for details.
+This project is licensed under the MIT License see the [LICENSE](LICENSE) file for details.
 
-MIT License © 2026 BennyAliston. Permission is hereby granted, free of charge, to use, copy, modify, and distribute this software.
+MIT License © 2025 BennyAliston. Permission is hereby granted, free of charge, to use, copy, modify, and distribute this software.
 
