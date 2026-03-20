@@ -1,6 +1,23 @@
 # Ropix Share
 
-**Ropix Share** is a lightweight, real-time file sharing web application with a **Retro Pixel Art UI**. Built with **React + Vite** frontend and **Flask + Socket.IO** backend, it enables instant file sharing across devices on the same network.
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+[![React](https://img.shields.io/badge/React-18+-61DAFB?logo=react)](https://react.dev)
+[![Flask](https://img.shields.io/badge/Flask-3.1+-000000?logo=flask)](https://flask.palletsprojects.com)
+[![Python](https://img.shields.io/badge/Python-3.8+-3776ab?logo=python)](https://www.python.org)
+
+**Ropix Share** is a lightweight, real-time file sharing application with a retro pixel art UI. Share files instantly across devices on the same network with zero setup required.
+
+Combines a **React + Vite** frontend with a **Flask + Socket.IO** backend to deliver responsive, real-time file synchronization without installation.
+
+## Table of Contents
+
+- [Features](#features)
+- [Quick Start](#quick-start)
+- [How It Works](#how-it-works)
+- [Tech Stack](#tech-stack)
+- [Project Structure](#project-structure)
+- [Recent Updates](#recent-updates)
+- [License](#license)
 
 ## Features
 
@@ -52,27 +69,46 @@
 
 ## Quick Start
 
-```bash
-# Clone
-git clone https://github.com/your-username/Ropix-Share.git
-cd Ropix-Share
+### Prerequisites
 
-# Backend
-python3 -m venv venv
-source venv/bin/activate
-pip install -r requirements.txt
+- **Python 3.8+**
+- **Node.js 16+** and npm
+- **Git**
 
-# Frontend
-cd frontend
-npm install
-npm run build
+### Installation
 
-# Run
-cd ..
-python app.py
-```
+1. **Clone the repository:**
+   ```bash
+   git clone https://github.com/BennyAliston/Ropix-Share.git
+   cd Ropix-Share
+   ```
 
-Open http://localhost:5000
+2. **Set up the backend:**
+   ```bash
+   python3 -m venv venv
+   source venv/bin/activate  # On Windows: venv\Scripts\activate
+   pip install -r requirements.txt
+   ```
+
+3. **Set up the frontend:**
+   ```bash
+   cd frontend
+   npm install
+   npm run build
+   cd ..
+   ```
+
+4. **Start the application:**
+   ```bash
+   python app.py
+   ```
+
+5. **Open in your browser:**
+   ```
+   http://localhost:5000
+   ```
+
+Share the URL with other devices on your network and start sharing files immediately!
 
 ## How It Works
 
@@ -109,11 +145,15 @@ Open http://localhost:5000
 
 ## Tech Stack
 
-- **Frontend**: React, Vite, Socket.IO Client, QRCode.react, html5-qrcode
-- **Backend**: Flask, Flask-SocketIO, Pillow, Mutagen
-- **Styling**: Custom CSS with retro pixel art theme
+| Component | Technology |
+|-----------|-----------|
+| **Frontend** | React 18+, Vite, Socket.IO Client |
+| **UI/UX** | Custom CSS with retro pixel art theme, QRCode.react, html5-qrcode |
+| **Backend** | Flask 3.1+, Flask-SocketIO, Python 3.8+ |
+| **Image Processing** | Pillow (file metadata extraction) |
+| **Audio/Media** | Mutagen (metadata parsing) |
 
-## Structure
+## Project Structure
 
 ```
 Ropix-Share/
@@ -142,4 +182,7 @@ Ropix-Share/
 
 ## License
 
-MIT License
+This project is licensed under the MIT License — see the [LICENSE](LICENSE) file for details.
+
+MIT License © 2026 BennyAliston. Permission is hereby granted, free of charge, to use, copy, modify, and distribute this software.
+
